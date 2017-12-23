@@ -4,6 +4,9 @@
 
 namespace rabid {
 
+  template < typename ... >
+  using void_t = void;
+
   template < typename Container, typename Member >
   constexpr uintptr_t offset_of( Member Container::* pointer )
   {
@@ -18,10 +21,18 @@ namespace rabid {
 
   template < size_t Number >
   struct Log2 : std::integral_constant<std::size_t, Log2<(Number >> 1)>::value + 1 > {};
- 
 
   template <>
   struct Log2<1> : std::integral_constant<std::size_t, 0> {};
+
+  template < typename Src, typename Dst, typename = void_t<> >
+  struct valid_static_cast : std::false_type {};
+
+  template < typename Src, typename Dst >
+  struct valid_static_cast<Src,Dst,void_t<decltype( static_cast<Dst>( std::declval<Src>() ) )>> : std::true_type {};
+
+  template < typename Type, typename Result = typename std::underlying_type<Type>::type >
+  Result underlying_cast( const Type & type ) { return static_cast<Result>( type ); }
 
   template < typename Type, int TagBits = Log2<alignof(Type)>::value >
   class TaggedPointer {
@@ -30,23 +41,38 @@ namespace rabid {
 
     static constexpr uintptr_t mask = uintptr_t(uintptr_t(1) << TagBits) - uintptr_t(1);
 
+    TaggedPointer() = default;
+
     constexpr explicit TaggedPointer( Type * value_arg, uintptr_t tag_arg = 0 )
     : value( static_cast<uintptr_t>( value_arg ) | tag_arg )
+    {}
+
+    template < typename OtherType, size_t OtherBits,
+      typename = std::enable_if_t<(OtherBits <= TagBits)>,
+      typename = std::enable_if_t<(valid_static_cast<OtherType*,Type*>::value)> >
+    constexpr TaggedPointer( const TaggedPointer<OtherType,OtherBits> & other )
+    : TaggedPointer( static_cast<Type*>( other.get() ), other.tag() )
     {}
 
     void set( Type * value_arg, uintptr_t tag_arg = 0 ) { value =  static_cast<uintptr_t>( value_arg ) | tag_arg; }
 
     constexpr Type * get() const { return static_cast<Type*>(value & ~mask); }
 
-    constexpr uintptr_t tag() const { return value & mask; }
-    void tag( uintptr_t tag_arg ) { value = static_cast<uintptr_t>( get() ) | tag_arg; }
+    template < typename TagType = uintptr_t >
+    constexpr TagType tag() const { return static_cast<TagType>( value & mask ); }
+
+    template < typename TagType = uintptr_t >
+    void tag( TagType tag_arg ) { value = static_cast<uintptr_t>( get() ) | static_cast<uintptr_t>( tag_arg ); }
 
     constexpr Type * operator -> () const { return get(); }
     constexpr Type & operator * () const { return *get(); }
 
-    TaggedPointer & operator = ( Type * value_arg )
+    template < typename OtherType, size_t OtherBits,
+      typename = std::enable_if_t<(OtherBits <= TagBits)>,
+      typename = std::enable_if_t<(valid_static_cast<OtherType*,Type*>::value)> >
+    TaggedPointer & operator = ( const TaggedPointer<OtherType,OtherBits> & other )
     {
-      set( value_arg );
+      set( static_cast<Type*>( other.get() ), other.tag() );
       return * this;
     }
 
@@ -164,17 +190,19 @@ namespace rabid {
         return List<Link,Dimension>{ head.exchange( value, std::memory_order_acq_rel ) };
       }
 
-      void insert( const LinkPointer & link )
+      template < typename Prepare >
+      void insert( const LinkPointer & link, Prepare && prepare )
       {
-        insert( link, link );
+        insert( link, link, std::forward<Prepare>( prepare ) );
       }
 
-      void insert( const LinkPointer & first, const LinkPointer & tail )
+      template < typename Prepare >
+      void insert( const LinkPointer & first, const LinkPointer & tail, Prepare && prepare )
       {
         for(;;)
         {
           auto prior = head.load( std::memory_order_relaxed );
-          tail->at( Dimension ) = prior;
+          tail->at( Dimension ) = prepare( prior );
           if( head.compare_exchange_strong( prior, first, std::memory_order_release ) )
           {
             break;

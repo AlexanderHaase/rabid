@@ -2,6 +2,8 @@
 #include "intrusive.h"
 #include <algorithm>
 #include <memory>
+#include <condition_variable>
+#include <functional>
 
 namespace rabid {
 
@@ -26,12 +28,14 @@ namespace rabid {
 
     class Connection {
      public:
-      void send( const Message::PointerType & first, const Message::PointerType & last ) const
+      template < typename Prepare >
+      void send( const Message::PointerType & first, const Message::PointerType & last, Prepare && prepare ) const
       {
-        remote.insert( first, last );
+        remote.insert( first, last, std::forward<Prepare>( prepare ) );
       }
 
-      void sent( const Message::PointerType & message ) const { remote.insert( message ); }
+      template < typename Prepare >
+      void send( const Message::PointerType & message, Prepare && prepare ) const { remote.insert( message, std::forward<Prepare>( prepare ) ); }
 
       Batch receive( const Message::PointerType & message ) const { return local.clear( message ); }      
       
@@ -50,13 +54,15 @@ namespace rabid {
     template < typename AddressMap >
     class Node : protected AddressMap {
      public:
-      const Connection & connection( size_t index ) const { return connections[ AddressMap::operator()( index ) ]; }
+      const Connection & route( size_t index ) const { return connections[ AddressMap::operator()( index ) ]; }
 
       template < typename ...Args >
       Node( std::vector<Connection> connections_arg, Args && ... args )
       : AddressMap( std::forward<Args>( args )... )
       , connections( std::move( connections_arg ) )
       {}
+
+      const std::vector<Connection> & all() const { return connections; }
 
      protected:
       std::vector<Connection> connections;
@@ -133,12 +139,65 @@ namespace rabid {
     };
   }
 
-  template < typename Interconnect, typename Idle >
+  class ThreadModel {
+   public:
+    class Idle {
+     public:
+      bool yeild()
+      {
+        std::unique_lock<std::mutex> lock( mutex ); 
+        condition.wait( lock );
+        return enabled.load( std::memory_order_relaxed );
+      }
+
+      void interrupt()
+      {
+        condition.notify_one();
+      }
+
+      void enable( bool value )
+      {
+        enabled.store( value, std::memory_order_relaxed );
+        condition.notify_one();
+      }
+     protected:
+      std::mutex mutex;
+      std::condition_variable condition;
+      std::atomic<bool> enabled{ true };
+    };
+
+    template < typename Iterator >
+    void parallel( const Iterator & begin, const Iterator & end )
+    {
+      std::vector<std::thread> threads;
+      for( auto func = begin; func != end; ++func )
+      {
+        threads.emplace_back( [func](){ func->operator()(); } );
+      }
+    } 
+
+    Idle & idle( size_t index ) { return idles[ index ]; }
+
+    ThreadModel( size_t count )
+    : idles( std::make_unique<Idle[]>( count ) )
+    {}
+
+   protected:
+    std::unique_ptr<Idle[]> idles;
+  };
+
+  template < typename Interconnect, typename ExecutionModel >
   class Executor {
    public:
+    template < typename Function >
+    static void send( size_t index, Function && function )
+    {
+      current_worker->send( index, std::forward<Function>( function ) );
+    }
     
    protected:
-    struct Executable {};
+    using Executable = std::function<void()>;
+
     struct Task : public interconnect::Message {
       enum class Tag {
         reverse,
@@ -149,12 +208,138 @@ namespace rabid {
     };
 
     class Worker {
-    
+     public:
+      Worker( typename Interconnect::NodeType & node_arg, typename Idle::Actin & idle_arg, size_t capacity )
+      : node( node_arg )
+      , idle( idle_arg )
+      , cache( capacity )
+      {}
 
-      typename Idle::Action idle;
+      template < typename Function >
+      void send( size_t index, Function && function )
+      {
+        auto task = cache.capture( std::forward<Function>( function ) );
+        task.tag( Task::Tag::normal );
+        TaggedPointer<Task> wake{};
+        node.route( index ).send( task, [&wake]( const interconnect::Message::PointerType & prior )
+          {
+            wake = prior;
+            switch( prior.tag<Task::Tag>() )
+            {
+              case( Task::Tag::reverse ):
+                return interconnect::Message::PointerType{ nullptr, Task::Tag::normal };
+              default:
+                return prior;
+            }
+          });
+        if( wake.tag<Task::Tag>() == Task::Tag::reverse )
+        {
+          wake->executable();
+        }
+      }
+
+      void run()
+      {
+        current_worker = this;
+        for(;;)
+        {
+          bool prepare_idle = true;
+          for( auto & connection : node.all() )
+          {
+            auto batch = connection.receive( sentinel( prepare_idle ) );
+            while( !batch.empty() )
+            {
+              TaggedPointer<Task> task = batch.remove();
+              task->excutable();
+              cache.put( task );
+            }
+          }
+
+          if( prepare_idle )
+          {
+            bool exit = idle.yeild();
+            if( exit )
+            {
+              break;
+            }
+          }
+        }
+        current_worker = nullptr;
+      }
+     protected:
+      TaggedPointer<Task> sentinel( bool prepare_idle )
+      {
+        if( prepare_idle )
+        {
+          return cache.capture( [this](){ idle.interrupt(); } );
+        }
+        else
+        {
+          return TaggedPointer<Task>{ nullptr, Task::Tag::normal };
+        }
+      }
+
+      class TaskCache {
+       public:
+        TaggedPointer<Task> get()
+        {
+          TaggedPointer<Task> result;
+          if( cache.size() )
+          {
+            result = cache.back();
+            cache.pop_back();
+          }
+          else
+          {
+            result = TaggedPointer<Task>( new Task{} );
+          }
+          return result;
+        }
+
+        template < typename Function >
+        TaggedPointer<Task> capture( Function && function )
+        {
+          auto result = get();
+          result->executable = std::forward<Function>( function );
+          return result;
+        }
+
+        void put( const TaggedPointer<Task> & task )
+        {
+          if( cache.size() < cache.capacity )
+          {
+            cache.emplace_back( task );
+          }
+          else
+          {
+            delete task.get();
+          }
+        }
+
+        TaskCache( size_t capacity )
+        {
+          cache.reserve( capacity );
+        }
+
+        ~TaskCache()
+        {
+          for( auto & task : cache )
+          {
+            delete task.get();
+          }
+        }
+       protected:
+        std::vector<TaggedPointer<Task>> cache;
+      };
+
       typename Interconnect::NodeType & node;
+      typename ExecutionModel::Idle & idle;
+      TaskCache cache;
     };
 
     Interconnect interconnect;
+    ExecutionModel execution;
+    std::vector<Worker> workers;
+    static thread_local Worker * current_worker = nullptr;
   };
 }
