@@ -1,6 +1,7 @@
 #pragma once
 #include <array>
 #include <atomic>
+#include <type_traits>
 
 namespace rabid {
 
@@ -44,7 +45,7 @@ namespace rabid {
     TaggedPointer() = default;
 
     constexpr explicit TaggedPointer( Type * value_arg, uintptr_t tag_arg = 0 )
-    : value( static_cast<uintptr_t>( value_arg ) | tag_arg )
+    : value( reinterpret_cast<uintptr_t>( value_arg ) | tag_arg )
     {}
 
     template < typename OtherType, size_t OtherBits,
@@ -54,18 +55,25 @@ namespace rabid {
     : TaggedPointer( static_cast<Type*>( other.get() ), other.tag() )
     {}
 
-    void set( Type * value_arg, uintptr_t tag_arg = 0 ) { value =  static_cast<uintptr_t>( value_arg ) | tag_arg; }
+    template < typename OtherType, size_t OtherBits,
+      typename = std::enable_if_t<(OtherBits <= TagBits)>,
+      typename = std::enable_if_t<(valid_static_cast<OtherType*,Type*>::value)> >
+    constexpr operator TaggedPointer<OtherType,OtherBits>() const { return TaggedPointer<OtherType,OtherBits>{ get(), tag() }; }
 
-    constexpr Type * get() const { return static_cast<Type*>(value & ~mask); }
+    void set( Type * value_arg, uintptr_t tag_arg = 0 ) { value = reinterpret_cast<uintptr_t>( value_arg ) | tag_arg; }
+
+    constexpr Type * get() const { return reinterpret_cast<Type*>(value & ~mask); }
 
     template < typename TagType = uintptr_t >
     constexpr TagType tag() const { return static_cast<TagType>( value & mask ); }
 
     template < typename TagType = uintptr_t >
-    void tag( TagType tag_arg ) { value = static_cast<uintptr_t>( get() ) | static_cast<uintptr_t>( tag_arg ); }
+    void tag( TagType tag_arg ) { value = reinterpret_cast<uintptr_t>( get() ) | static_cast<uintptr_t>( tag_arg ); }
 
     constexpr Type * operator -> () const { return get(); }
     constexpr Type & operator * () const { return *get(); }
+
+    TaggedPointer & operator = ( nullptr_t ) { value = reinterpret_cast<uintptr_t>( nullptr ); return *this; }
 
     template < typename OtherType, size_t OtherBits,
       typename = std::enable_if_t<(OtherBits <= TagBits)>,
@@ -75,6 +83,14 @@ namespace rabid {
       set( static_cast<Type*>( other.get() ), other.tag() );
       return * this;
     }
+
+    friend bool operator == ( const TaggedPointer & a, const Type & b ) { return a.get() == b; }
+    friend bool operator == ( const Type & b, const TaggedPointer & a ) { return a.get() == b; }
+    friend bool operator == ( const TaggedPointer & a, const TaggedPointer & b ) { return a.value == b.value; }
+
+    friend bool operator != ( const TaggedPointer & a, const Type & b ) { return !(a == b); }
+    friend bool operator != ( const Type & b, const TaggedPointer & a ) { return !(a == b); }
+    friend bool operator != ( const TaggedPointer & a, const TaggedPointer & b ) { return !(a == b); }
 
    protected:
     uintptr_t value;
@@ -211,7 +227,7 @@ namespace rabid {
       }
 
      protected:
-      std::atomic<LinkPointer> head{ {nullptr} };
+      std::atomic<LinkPointer> head{ LinkPointer{nullptr} };
     };
   }
 }

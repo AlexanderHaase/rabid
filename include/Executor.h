@@ -73,9 +73,9 @@ namespace rabid {
       current_worker->send( index, std::forward<Function>( function ) );
     }
 
-    Executor( size_t size = std::thread::hardware_concurrency() )
+    Executor( size_t cache, size_t size = std::thread::hardware_concurrency() )
     : interconnect( size )
-    , workers( make_workers( interconnect, size ) )
+    , workers( make_workers( interconnect, size, cache ) )
     , execution( workers.begin(), workers.end() )
     {}
     
@@ -91,9 +91,11 @@ namespace rabid {
       Executable executable;
     };
 
+    static_assert( valid_static_cast<Task,interconnect::Message>::value, "Wahahah" );
+
     class Worker {
      public:
-      Worker( typename Interconnect::NodeType & node_arg, size_t capacity )
+      Worker( const typename Interconnect::NodeType & node_arg, size_t capacity )
       : node( node_arg )
       , cache( capacity )
       {}
@@ -123,7 +125,7 @@ namespace rabid {
       }
 
       template < typename Idle >
-      void run( Idle && idle )
+      void operator()( Idle && idle )
       {
         current_worker = this;
         for(;;)
@@ -131,11 +133,12 @@ namespace rabid {
           bool prepare_idle = true;
           for( auto & connection : node.all() )
           {
-            auto batch = connection.receive( sentinel( idle, prepare_idle ) );
+            TaggedPointer<interconnect::Message> sentinel = make_sentinel( idle, prepare_idle );
+            auto batch = connection.receive( sentinel );
             while( !batch.empty() )
             {
               TaggedPointer<Task> task = batch.remove();
-              task->excutable();
+              task->executable();
               cache.put( task );
             }
           }
@@ -153,7 +156,7 @@ namespace rabid {
       }
      protected:
       template < typename Idle >
-      TaggedPointer<Task> sentinel( Idle && idle, bool prepare_idle )
+      TaggedPointer<Task> make_sentinel( Idle && idle, bool prepare_idle )
       {
         if( prepare_idle )
         {
@@ -218,24 +221,28 @@ namespace rabid {
         std::vector<TaggedPointer<Task>> cache;
       };
 
-      typename Interconnect::NodeType & node;
+      const typename Interconnect::NodeType & node;
       TaskCache cache;
     };
 
-    static std::vector<Worker> make_workers( Interconnect & interconnect, size_t count )
+    static std::vector<Worker> make_workers( Interconnect & interconnect, size_t count, size_t cache )
     {
       std::vector<Worker> workers;
       workers.reserve( count );
       for( size_t index = 0; index < count; ++index )
       {
-        workers.emplace_back( interconnect.node( index ) );
+        workers.emplace_back( interconnect.node( index ), cache );
       }
       return workers;
     }
 
     Interconnect interconnect;
-    ExecutionModel execution;
     std::vector<Worker> workers;
-    static thread_local Worker * current_worker = nullptr;
+    ExecutionModel execution;
+    static thread_local Worker * current_worker;
   };
+  
+
+  template < typename Interconnect, typename ExecutionModel >
+  thread_local typename Executor<Interconnect,ExecutionModel>::Worker * current_worker = nullptr;
 }
