@@ -48,8 +48,8 @@ foreach flag : cpp_other_flags
   endif
 endforeach
 
-
 base_includes = include_directories( '../', 'include' ) 
+base_dependencies = dependency( 'threads' )
 
 subdir( 'test' )
 

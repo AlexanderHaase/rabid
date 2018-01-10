@@ -2,6 +2,7 @@
 #include <array>
 #include <atomic>
 #include <type_traits>
+#include <cstddef>
 
 namespace rabid {
 
@@ -33,7 +34,7 @@ namespace rabid {
   struct valid_static_cast<Src,Dst,void_t<decltype( static_cast<Dst>( std::declval<Src>() ) )>> : std::true_type {};
 
   template < typename Type, typename Result = typename std::underlying_type<Type>::type >
-  Result underlying_cast( const Type & type ) { return static_cast<Result>( type ); }
+  constexpr Result underlying_cast( const Type & type ) { return static_cast<Result>( type ); }
 
   template < typename Type, int TagBits = Log2<alignof(Type)>::value >
   class TaggedPointer {
@@ -44,23 +45,30 @@ namespace rabid {
 
     TaggedPointer() = default;
 
-    constexpr explicit TaggedPointer( Type * value_arg, uintptr_t tag_arg = 0 )
-    : value( reinterpret_cast<uintptr_t>( value_arg ) | tag_arg )
+    template < typename TagType = uintptr_t >
+    constexpr explicit TaggedPointer( Type * value_arg, TagType tag_arg = 0 )
+    : value( reinterpret_cast<uintptr_t>( value_arg ) | static_cast<uintptr_t>( tag_arg ) )
     {}
 
-    template < typename OtherType, size_t OtherBits,
+    template < typename OtherType, size_t OtherBits /*,
       typename = std::enable_if_t<(OtherBits <= TagBits)>,
-      typename = std::enable_if_t<(valid_static_cast<OtherType*,Type*>::value)> >
+      typename = std::enable_if_t<(valid_static_cast<OtherType*,Type*>::value)> */ >
     constexpr TaggedPointer( const TaggedPointer<OtherType,OtherBits> & other )
     : TaggedPointer( static_cast<Type*>( other.get() ), other.tag() )
     {}
 
-    template < typename OtherType, size_t OtherBits,
+    template < typename OtherType, size_t OtherBits/*,
       typename = std::enable_if_t<(OtherBits <= TagBits)>,
-      typename = std::enable_if_t<(valid_static_cast<OtherType*,Type*>::value)> >
+      typename = std::enable_if_t<(valid_static_cast<OtherType*,Type*>::value)>*/ >
     constexpr operator TaggedPointer<OtherType,OtherBits>() const { return TaggedPointer<OtherType,OtherBits>{ get(), tag() }; }
 
-    void set( Type * value_arg, uintptr_t tag_arg = 0 ) { value = reinterpret_cast<uintptr_t>( value_arg ) | tag_arg; }
+    constexpr operator Type * () const { return get(); }
+
+    template < typename OtherType, size_t OtherBits = Log2<alignof( OtherType )>::value >
+    constexpr TaggedPointer<OtherType,OtherBits> cast() const { return TaggedPointer<OtherType,OtherBits>{ static_cast<OtherType*>(get()), tag() }; }
+
+    template < typename TagType = uintptr_t >
+    void set( Type * value_arg, TagType tag_arg = 0 ) { value = reinterpret_cast<uintptr_t>( value_arg ) | static_cast<uintptr_t>( tag_arg ); }
 
     constexpr Type * get() const { return reinterpret_cast<Type*>(value & ~mask); }
 
@@ -73,7 +81,7 @@ namespace rabid {
     constexpr Type * operator -> () const { return get(); }
     constexpr Type & operator * () const { return *get(); }
 
-    TaggedPointer & operator = ( nullptr_t ) { value = reinterpret_cast<uintptr_t>( nullptr ); return *this; }
+    TaggedPointer & operator = ( std::nullptr_t ) { value = reinterpret_cast<uintptr_t>( nullptr ); return *this; }
 
     template < typename OtherType, size_t OtherBits,
       typename = std::enable_if_t<(OtherBits <= TagBits)>,
@@ -111,7 +119,7 @@ namespace rabid {
 
   namespace intrusive {
 
-    template< size_t Connectivity, template< typename > class Pointer = std::add_pointer_t >
+    template< template< typename > class Pointer = std::add_pointer_t >
     class Link {
      public:
       using PointerType = Pointer<Link>;
@@ -128,21 +136,21 @@ namespace rabid {
         return container_of( this, pointer );
       }
 
-      Link* & at( size_t index )
+      PointerType & next()
       {
-        return links[ index ];
+        return link;
       }
 
-      Link* at( size_t index ) const
+      const PointerType & next() const
       {
-        return links[ index ];
+        return link;
       }
 
      protected:
-      std::array<PointerType, Connectivity> links;
+      PointerType link;
     };
 
-    template < typename Link, size_t Dimension = 0>
+    template < typename Link>
     class List {
      public:
       using LinkType = Link;
@@ -155,14 +163,14 @@ namespace rabid {
 
       void insert( const LinkPointer & first, const LinkPointer & last )
       {
-        last->at( Dimension ) = head;
+        last->next() = head;
         head = first;
       }
 
       LinkPointer remove()
       {
         const auto result = head;
-        head = result->at( Dimension );
+        head = result->next();
         return result;
       }
 
@@ -195,15 +203,15 @@ namespace rabid {
       LinkPointer head = nullptr;
     };
 
-    template < typename Link, size_t Dimension = 0>
+    template < typename Link>
     class Exchange {
      public:
       using LinkType = Link;
       using LinkPointer = typename LinkType::PointerType;
 
-      List<Link,Dimension> clear( const LinkPointer & value = LinkPointer{ nullptr } )
+      List<Link> clear( const LinkPointer & value = LinkPointer{ nullptr } )
       {
-        return List<Link,Dimension>{ head.exchange( value, std::memory_order_acq_rel ) };
+        return List<Link>{ head.exchange( value, std::memory_order_acq_rel ) };
       }
 
       template < typename Prepare >
@@ -218,7 +226,7 @@ namespace rabid {
         for(;;)
         {
           auto prior = head.load( std::memory_order_relaxed );
-          tail->at( Dimension ) = prepare( prior );
+          tail->next() = prepare( prior );
           if( head.compare_exchange_strong( prior, first, std::memory_order_release ) )
           {
             break;

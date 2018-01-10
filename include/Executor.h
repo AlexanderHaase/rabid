@@ -15,25 +15,33 @@ namespace rabid {
      public:
       bool yeild()
       {
-        std::unique_lock<std::mutex> lock( mutex ); 
-        condition.wait( lock );
-        return enabled.load( std::memory_order_relaxed );
+        std::unique_lock<std::mutex> lock( mutex );
+        if( enabled )
+        {
+          condition.wait( lock );
+        }
+        return enabled;
       }
 
       void interrupt()
       {
+        std::unique_lock<std::mutex> lock( mutex );
+        lock.unlock();
         condition.notify_one();
       }
 
       void enable( bool value )
       {
-        enabled.store( value, std::memory_order_relaxed );
+        std::unique_lock<std::mutex> lock( mutex );
+        enabled = value;
+        lock.unlock();
         condition.notify_one();
       }
+
      protected:
       std::mutex mutex;
       std::condition_variable condition;
-      std::atomic<bool> enabled{ true };
+      bool enabled = true;
     };
 
     template < typename Iterator >
@@ -41,34 +49,37 @@ namespace rabid {
     {
       for( auto func = begin; func != end; ++func )
       {
-        threads.emplace_back( *func );
+        threads.emplace_back( std::make_unique<Thread>( *func ) );
+      }
+    }
+
+    ~ThreadModel()
+    {
+      for( auto & thread : threads )
+      {
+        thread->idle.enable( false );
+        thread->thread.join();
       }
     }
 
    protected:
     struct Thread {
-      std::unique_ptr<Idle> idle;
+      Idle idle;
       std::thread thread;
 
       template < typename Function >
       Thread( Function && function )
-      : idle( std::make_unique<Idle>() )
-      , thread( [&]{ function( *idle ); } )
+      : thread( [&]{ function( idle ); } )
       {}
-
-      ~Thread()
-      {
-        thread.join();
-      }
     };
-    std::vector<Thread> threads;
+    std::vector<std::unique_ptr<Thread>> threads;
   };
 
   template < typename Interconnect, typename ExecutionModel >
   class Executor {
    public:
     template < typename Function >
-    static void send( size_t index, Function && function )
+    static void async( size_t index, Function && function )
     {
       current_worker->send( index, std::forward<Function>( function ) );
     }
@@ -78,6 +89,30 @@ namespace rabid {
     , workers( make_workers( interconnect, size, cache ) )
     , execution( workers.begin(), workers.end() )
     {}
+
+    template< typename Function >
+    void inject( size_t index, Function && function )
+    {
+      TaggedPointer<Task> task{ new Task{}, Task::Tag::normal };
+      task->executable = std::forward<Function>( function );
+      TaggedPointer<Task> wake{};
+      interconnect.node( 0 ).route( index ).send( task.template cast<typename interconnect::Message>(), [&wake]( const interconnect::Message::PointerType & prior )
+        {
+          wake = prior.cast<Task>();
+          switch( prior.tag< typename Task::Tag>() )
+          {
+            case( Task::Tag::reverse ):
+              return interconnect::Message::PointerType{ nullptr, Task::Tag::normal };
+            default:
+              return prior;
+          }
+        });
+
+      if( wake.template tag< typename Task::Tag>() == Task::Tag::reverse )
+      {
+        wake->executable();
+      }
+    }
     
    protected:
     using Executable = std::function<void()>;
@@ -133,11 +168,11 @@ namespace rabid {
           bool prepare_idle = true;
           for( auto & connection : node.all() )
           {
-            TaggedPointer<interconnect::Message> sentinel = make_sentinel( idle, prepare_idle );
+            auto sentinel = make_sentinel( idle, prepare_idle ).template cast<interconnect::Message>();
             auto batch = connection.receive( sentinel );
             while( !batch.empty() )
             {
-              TaggedPointer<Task> task = batch.remove();
+              auto task = batch.remove().template cast<Task>();
               task->executable();
               cache.put( task );
             }
@@ -145,7 +180,7 @@ namespace rabid {
 
           if( prepare_idle )
           {
-            bool exit = idle.yeild();
+            bool exit = !idle.yeild();
             if( exit )
             {
               break;
@@ -195,7 +230,7 @@ namespace rabid {
 
         void put( const TaggedPointer<Task> & task )
         {
-          if( cache.size() < cache.capacity )
+          if( cache.size() < cache.capacity() )
           {
             cache.emplace_back( task );
           }
@@ -244,5 +279,5 @@ namespace rabid {
   
 
   template < typename Interconnect, typename ExecutionModel >
-  thread_local typename Executor<Interconnect,ExecutionModel>::Worker * current_worker = nullptr;
+  thread_local typename Executor<Interconnect,ExecutionModel>::Worker * Executor<Interconnect,ExecutionModel>::current_worker = nullptr;
 }

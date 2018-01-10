@@ -18,9 +18,9 @@ namespace rabid {
 
   namespace interconnect {
 
-    using Message = intrusive::Link<1, tagged_pointer_bits<3>::type >;
+    using Message = intrusive::Link< tagged_pointer_bits<3>::type >;
 
-    using Buffer = CacheAligned< intrusive::Exchange<Message,0> >;
+    using Buffer = CacheAligned< intrusive::Exchange<Message> >;
 
     using Batch = intrusive::List<Message>;
 
