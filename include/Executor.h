@@ -119,8 +119,8 @@ namespace rabid {
 
     struct Task : public interconnect::Message {
       enum class Tag {
-        reverse,
         normal,
+        reverse,
         delay
       };
       Executable executable;
@@ -138,13 +138,13 @@ namespace rabid {
       template < typename Function >
       void send( size_t index, Function && function )
       {
-        auto task = cache.capture( std::forward<Function>( function ) );
+        auto task = cache.capture( std::forward<Function>( function ), Task::Tag::normal );
         task.tag( Task::Tag::normal );
         TaggedPointer<Task> wake{};
-        node.route( index ).send( task, [&wake]( const interconnect::Message::PointerType & prior )
+        node.route( index ).send( task.template cast<typename interconnect::Message>(), [&wake]( const interconnect::Message::PointerType & prior )
           {
-            wake = prior;
-            switch( prior.tag<Task::Tag>() )
+            wake = prior.cast<Task>();
+            switch( prior.tag< typename Task::Tag>() )
             {
               case( Task::Tag::reverse ):
                 return interconnect::Message::PointerType{ nullptr, Task::Tag::normal };
@@ -153,7 +153,7 @@ namespace rabid {
             }
           });
 
-        if( wake.template tag<Task::Tag>() == Task::Tag::reverse )
+        if( wake.template tag< typename Task::Tag>() == Task::Tag::reverse )
         {
           wake->executable();
         }
@@ -195,7 +195,7 @@ namespace rabid {
       {
         if( prepare_idle )
         {
-          return cache.capture( [&idle](){ idle.interrupt(); } );
+          return cache.capture( [&idle](){ idle.interrupt(); }, Task::Tag::reverse );
         }
         else
         {
@@ -205,25 +205,25 @@ namespace rabid {
 
       class TaskCache {
        public:
-        TaggedPointer<Task> get()
+        TaggedPointer<Task> get( typename Task::Tag tag )
         {
           TaggedPointer<Task> result;
           if( cache.size() )
           {
-            result = cache.back();
+            result = TaggedPointer<Task>( cache.back().get(), tag );
             cache.pop_back();
           }
           else
           {
-            result = TaggedPointer<Task>( new Task{} );
+            result = TaggedPointer<Task>( new Task{}, tag );
           }
           return result;
         }
 
         template < typename Function >
-        TaggedPointer<Task> capture( Function && function )
+        TaggedPointer<Task> capture( Function && function, typename Task::Tag tag )
         {
-          auto result = get();
+          auto result = get( tag );
           result->executable = std::forward<Function>( function );
           return result;
         }
