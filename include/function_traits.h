@@ -203,6 +203,6 @@ namespace rabid {
 	/// @tparam isFunctor boolean if T provides operator() (deduced).
 	///
 	template < typename T >
-	using function_traits = function_traits_impl< T, is_functor<T>::value >;
+	using function_traits = function_traits_impl< std::decay_t<T>, is_functor<std::decay_t<T>>::value >;
 
 }

@@ -1,51 +1,55 @@
 #pragma once
 
-#include "function_traits.h"
+#include "../function_traits.h"
 
 namespace rabid {
 
   namespace detail {
 
-    /// Provides captured values to enable continuations and futures.
+    /// Provides Container values to enable continuations and futures.
     ///
-    /// Capture provides the following uniform interface:
-    ///   - construct( ... ) construct the captured type from arguments.
+    /// Container provides the following uniform interface:
+    ///   - construct( ... ) construct the Container type from arguments.
     ///   - capture( func, args... ) capture the result of the expression.
-    ///   - destruct() call the captured object's destructor.
-    ///   - value() access the captured value by reference.
+    ///   - destruct() call the Container object's destructor.
+    ///   - value() access the Container value by reference.
     ///
     /// A void specialization is provided for capturing void results.
     ///
     template <typename Type>
-    class Captured {
+    class Container {
      public:
+      using type = std::decay_t<Type>;
+
       template < typename ...Args >
       void construct( Args && ...args )
       {
-        new (&storage) Type{ std::forward<Args>( args )... };
+        new (&storage) type{ std::forward<Args>( args )... };
       }
 
       template < typename Function, typename ... Args >
       void capture( Function && function, Args && ... args )
       {
-        new (&storage) Type{ function( std::forward<Args>( args )... ) };
+        new (&storage) type{ function( std::forward<Args>( args )... ) };
       }
 
-      Type & value() { return *reinterpret_cast<Type*>( &storage ); }
-      const Type & value() const { return *reinterpret_cast<Type*>( &storage ); }
+      type & value() { return *reinterpret_cast<Type*>( &storage ); }
+      const type & value() const { return *reinterpret_cast<Type*>( &storage ); }
 
       void destruct() { value().~Type(); }
      protected:
-      std::aligned_storage_t< sizeof(Type), alignof(Type)> storage;
+      std::aligned_storage_t< sizeof(type), alignof(type)> storage;
     };
 
     /// Specialization for void--omits value() method.
     ///
-    /// Provides uniform semantics regardless of captured type.
+    /// Provides uniform semantics regardless of Container type.
     ///
     template <>
-    class Captured<void> {
+    class Container<void> {
      public:
+      using type = void;
+
       template < typename ...Args >
       void construct( Args && ...args )
       {}
@@ -68,7 +72,7 @@ namespace rabid {
       typename ReturnType,
       typename ArgType,
       typename Traits = function_traits<Function> >
-    auto apply( Function && function, Captured<ReturnType> & result, Captured<ArgType> & arg )
+    auto apply( Function && function, Container<ReturnType> & result, Container<ArgType> & arg )
       -> std::enable_if_t<Traits::nargs==1>
     {
       result.capture( std::forward<Function>( function ), arg.value() );
@@ -81,7 +85,7 @@ namespace rabid {
     template <typename Function,
       typename ReturnType,
       typename Traits = function_traits<Function> >
-    auto apply( Function && function, Captured<ReturnType> & result, Captured<void> & )
+    auto apply( Function && function, Container<ReturnType> & result, Container<void> & )
       -> std::enable_if_t<Traits::nargs==0>
     {
       result.capture( std::forward<Function>( function ) );
