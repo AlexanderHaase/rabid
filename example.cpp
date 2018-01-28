@@ -17,22 +17,7 @@ namespace rabid {
 
 int main()
 {
-  {
-    rabid::Promise<int> promise;
-    auto before = promise.then( []( int value ) { std::cout << "before: " << value << std::endl; return value; } );
-    before
-      .then([]( int value ) { return value + 1; })
-      .then([]( int value ) { return value + 1; })
-      .then([]( int value ) { std::cout << "deep: " << value << std::endl; return value; });
-    promise.complete( 0 );
-    auto after = promise.then( []( int value ) { std::cout << "after: " << value << std::endl; return value; } );
-
-    rabid::Promise<int> chain;
-    chain.then( []( int & value ) { std::cout << "chain: " << value << std::endl; } );
-    chain.complete( promise );
-  }
-
-  rabid::detail::Promise2<int> promise;
+  rabid::Promise<int> promise;
   auto before = promise.then( []( int value ) { std::cout << "before: " << value << std::endl; return value; } );
   before
     .then([]( int value ) { return value + 1; })

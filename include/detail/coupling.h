@@ -6,7 +6,7 @@ namespace rabid {
 
   namespace detail {
 
-    // Current draft lock-free futures/continuations operate with two
+    // Current draft of lock-free futures/continuations operate with two
     // allocations per function: a result node that captures the function's
     // return value and functions as a sequence point for continuation and
     // splitting, and an expression node that links the function to it's result
@@ -57,6 +57,7 @@ namespace rabid {
     //
     // Structure prior to evaluation of first expression:
     // 
+    //  Thread A:
     //     expression[thread A]<Y> -> result<T>
     //                                   |->expression[thread B]<T> -> ...
     //                                   |->expression[thread C]<T> -> ...
@@ -65,24 +66,25 @@ namespace rabid {
     // After evaluation, dependant expressions are prepared for dispatch:
     //
     //   Thread A:
-    //
     //     expression[thread A]<Y> -> result<T>
     //                                  ^^^
     //                                  |||
-    //                                  ||*-expression[thread B]<T> -> ...
-    //                                  |*--expression[thread C]<T> -> ...
-    //                                  *---expression[thread D]<T> -> ...
+    //          ((reference to b)) ==>  ||*-expression[thread B]<T> -> ...
+    //          ((reference to c)) ==>  |*--expression[thread C]<T> -> ...
+    //          ((reference to d)) ==>  *---expression[thread D]<T> -> ...
     //
     // Then dispatched and evaluated (potentially concurrently):
     //
     //                                result<T>
     //                                  ^^^
-    //                       Thread B:  |||
-    //                                  ||*-expression[thread B]<T> -> ...
-    //                       Thread C:  ||
-    //                                  |*--expression[thread C]<T> -> ...
-    //                       Thread D:  |
-    //                                  *---expression[thread D]<T> -> ...
+    //   Thread B:                      |||
+    //          ((reference to b)) ==>  ||*-expression[thread B]<T> -> ...
+    //                                  ||
+    //   Thread C:                      ||
+    //          ((reference to c)) ==>  |*--expression[thread C]<T> -> ...
+    //                                  |
+    //   Thread D:                      |
+    //          ((reference to d)) ==>  *---expression[thread D]<T> -> ...
     //
     //
     // Returning to the joint object, coupling the allocation translates to
@@ -114,20 +116,35 @@ namespace rabid {
     //
     // With that in mind, it seems possible to prepare a base class that only
     // requires a single pointer to join both expressions.
-    //
 
-    template < class From, class To >
-    constexpr ptrdiff_t alignment_thunk()
-    {
-      if( alignof(To) > alignof(From) )
+    /// Get the offset of the first member of a subclass.
+    ///
+    /// Glancing at the C++17 standard, 13.1.3 says that memory layout with
+    /// inheritance is per composition. Note that structs/classes/unions
+    /// by default inherit the largest alignment of their members and are
+    /// sized as a multiple of their alignment for array packing purposes.
+    /// That means that subclasses may not use padding at the end of the base
+    /// class for their members, but instead use memory after the class.
+    ///
+    /// This asks the compiler to generate a pointer to the first member of
+    /// a subclass. Since the compiler will synthesize the same offset
+    /// for subclasses with identical first member types, any subclass may be
+    /// used to obtain the offset. Since the pointer points to an instance of
+    /// the member type, it is not undefined behavior to use it.
+    ///
+    /// Note: in multiple inheritance, the order of composition is not specifed
+    /// by the standard.
+    ///
+    template < class Base, class Member >
+    class first_subclass_member {
+     public:
+      static constexpr Member * cast( Base * base )
       {
-        return alignof(To) - alignof(From);
+        return &static_cast<Prototype*>( base )->member;
       }
-      else
-      {
-        return 0;
-      }
-    }
+     private:
+      struct Prototype : Base { Member member; };
+    };
 
     class Coupling : public referenced::Object<Coupling> {
      public:
@@ -171,8 +188,7 @@ namespace rabid {
       template < typename Value >
       Container<Value> & value()
       {
-        const auto unaligned = reinterpret_cast<ptrdiff_t>( this + 1 );
-        return *reinterpret_cast<Container<Value>*>( unaligned + alignment_thunk<Coupling,Value>() );
+        return *first_subclass_member<Coupling,Container<Value>>::cast( this );
       }
 
      protected:
@@ -262,54 +278,5 @@ namespace rabid {
      protected:
       Container<Result> container;
     };
-
-    template < typename Value >
-    class Future2 {
-     public:
-      template < typename Function >
-      auto then( Function && function )
-        -> Future2<typename function_traits<Function>::return_type>
-      {
-        using Result = typename function_traits<Function>::return_type;
-        referenced::Pointer<Coupling> result{ new Statement<Function,Value,Result>{ std::forward<Function>( function ) } };
-        value->chain( result );
-        return result;
-      }
-
-      Future2( referenced::Pointer<Coupling> && coupling )
-      : value( std::move( coupling ) )
-      {}
-
-     protected:
-      referenced::Pointer<Coupling> value;
-    };
-
-    template < typename Value >
-    class Promise2 {
-     public:
-      template < typename Function >
-      auto then( Function && function )
-        -> Future2<typename function_traits<Function>::return_type>
-      {
-        using Result = typename function_traits<Function>::return_type;
-        referenced::Pointer<Coupling> result{ new Statement<Function,Value,Result>{ std::forward<Function>( function ) } };
-        value->chain( result );
-        return result;
-      }
-
-      template < typename ...Args >
-      void complete( Args && ... args )
-      {
-        value->template value<Value>().construct( std::forward<Args>( args )... );
-        value->evaluate();
-      }
-
-      Promise2()
-      : value( new Placeholder<Value>{} )
-      {}
-
-     protected:
-      referenced::Pointer<Placeholder<Value>> value;
-    };
-  }
+ }
 }
