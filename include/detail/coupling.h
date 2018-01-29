@@ -116,167 +116,190 @@ namespace rabid {
     //
     // With that in mind, it seems possible to prepare a base class that only
     // requires a single pointer to join both expressions.
+    //
+    namespace expression {
 
-    /// Get the offset of the first member of a subclass.
-    ///
-    /// Glancing at the C++17 standard, 13.1.3 says that memory layout with
-    /// inheritance is per composition. Note that structs/classes/unions
-    /// by default inherit the largest alignment of their members and are
-    /// sized as a multiple of their alignment for array packing purposes.
-    /// That means that subclasses may not use padding at the end of the base
-    /// class for their members, but instead use memory after the class.
-    ///
-    /// This asks the compiler to generate a pointer to the first member of
-    /// a subclass. Since the compiler will synthesize the same offset
-    /// for subclasses with identical first member types, any subclass may be
-    /// used to obtain the offset. Since the pointer points to an instance of
-    /// the member type, it is not undefined behavior to use it.
-    ///
-    /// Note: in multiple inheritance, the order of composition is not specifed
-    /// by the standard.
-    ///
-    template < class Base, class Member >
-    class first_subclass_member {
-     public:
-      static constexpr Member * cast( Base * base )
-      {
-        return &static_cast<Prototype*>( base )->member;
-      }
-     private:
-      struct Prototype : Base { Member member; };
-    };
-
-    class Coupling : public referenced::Object<Coupling> {
-     public:
-      /// Destructor, implementations clears result<T> and function<Y>
+      /// Get the offset of the first member of a subclass.
       ///
-      virtual ~Coupling() = default;
-
-      /// Evaluation, implementations chain from argument to result.
+      /// Glancing at the C++17 standard, 13.1.3 says that memory layout with
+      /// inheritance is per composition. Note that structs/classes/unions
+      /// by default inherit the largest alignment of their members and are
+      /// sized as a multiple of their alignment for array packing purposes.
+      /// That means that subclasses may not use padding at the end of the base
+      /// class for their members, but instead use memory after the class.
       ///
-      virtual void evaluate() = 0;
-
-      /// Chain a coupling after this one.
+      /// This asks the compiler to generate a pointer to the first member of
+      /// a subclass. Since the compiler will synthesize the same offset
+      /// for subclasses with identical first member types, any subclass may be
+      /// used to obtain the offset. Since the pointer points to an instance of
+      /// the member type, it is not undefined behavior to use it.
       ///
-      void chain( const referenced::Pointer<Coupling> & coupling )
-      {
-        acquire( coupling );
-        for(;;)
+      /// Note: in multiple inheritance, the order of composition is not
+      /// specifed by the standard.
+      ///
+      template < class Base, class Member >
+      class first_subclass_member {
+       public:
+        static constexpr Member * cast( Base * base )
         {
-          Coupling * prior = pending.load( std::memory_order_relaxed );
-          if( prior == sentinel() )
+          return &static_cast<Prototype*>( base )->member;
+        }
+       private:
+        struct Prototype : Base { Member member; };
+      };
+
+      struct ImmediateDispatch
+      {
+        template < typename T >
+        friend void dispatch( T && t )
+        {
+          t->evaluate();
+        }
+      };
+
+      template < typename Dispatch >
+      class Expression : public referenced::Object<Expression<Dispatch>>, public Dispatch {
+       public:
+        /// Destructor, implementations clears result<T> and function<Y>
+        ///
+        virtual ~Expression() = default;
+
+        /// Evaluation, implementations chain from argument to result.
+        ///
+        virtual void evaluate() = 0;
+
+        /// Chain a coupling after this one.
+        ///
+        void chain( const referenced::Pointer<Expression> & expression )
+        {
+          acquire( expression );
+          for(;;)
           {
-            release( coupling );
-            coupling->next = this;
-            coupling->evaluate();
-            break;
+            Expression * prior = pending.load( std::memory_order_relaxed );
+            if( prior == sentinel() )
+            {
+              release( expression );
+              expression->next = this;
+              dispatch( expression );
+              break;
+            }
+            expression->next.usurp( prior );
+            if( pending.compare_exchange_strong( prior, expression, std::memory_order_relaxed ) )
+            {
+              break;
+            }
+            else
+            {
+              expression->next.leak();
+            }
           }
-          coupling->next.usurp( prior );
-          if( pending.compare_exchange_strong( prior, coupling, std::memory_order_relaxed ) )
+        }
+
+        /// Uniform location access for container.
+        ///
+        template < typename Value >
+        Container<Value> & value()
+        {
+          return *first_subclass_member<Expression,Container<Value>>::cast( this );
+        }
+
+       protected:
+        /// Head of linked list of dependant expressions
+        ///
+        std::atomic<Expression*> pending{ nullptr };
+
+        /// Dual use pointer:
+        ///  - Element for participating in linked lists.
+        ///  - Points to argument of evaluation.
+        ///
+        referenced::Pointer<Expression> next;
+
+        /// Sentinel value for linked list
+        ///
+        Expression * sentinel() { return this; }
+
+        /// Function for evaluating all pending couplings.
+        ///
+        void complete()
+        {
+          referenced::Pointer<Expression> waiting;
+          waiting.usurp( pending.exchange( sentinel(), std::memory_order_acquire ) );
+          while( waiting )
           {
-            break;
+            auto next = std::move( waiting->next );
+            waiting->next = this;
+            dispatch( waiting );
+            waiting = std::move( next );
+          }
+        }
+      };
+
+      template < typename Dispatch, typename Function, typename Arg, typename Result >
+      class Continuation final : public Expression<Dispatch> {
+       public:
+        virtual ~Continuation()
+        {
+          Super * value = pending.load( std::memory_order_relaxed );
+          if( value == sentinel() )
+          {
+            container.destruct();
           }
           else
           {
-            coupling->next.leak();
+            release( value );
           }
         }
-      }
 
-      /// Uniform location access for container.
-      ///
-      template < typename Value >
-      Container<Value> & value()
-      {
-        return *first_subclass_member<Coupling,Container<Value>>::cast( this );
-      }
-
-     protected:
-      /// Head of linked list of dependant expressions
-      ///
-      std::atomic<Coupling*> pending{ nullptr };
-
-      /// Dual use pointer:
-      ///  - Element for participating in linked lists.
-      ///  - Points to argument of evaluation.
-      ///
-      referenced::Pointer<Coupling> next;
-
-      /// Sentinel value for linked list
-      ///
-      Coupling * sentinel() { return this; }
-
-      /// Function for evaluating all pending couplings.
-      ///
-      void complete()
-      {
-        referenced::Pointer<Coupling> waiting;
-        waiting.usurp( pending.exchange( sentinel(), std::memory_order_acquire ) );
-        while( waiting )
+        virtual void evaluate( void ) override
         {
-          auto next = std::move( waiting->next );
-          waiting->next = this;
-          waiting->evaluate();
-          waiting = std::move( next );
+          apply( function, container, next->template value<Arg>() );
+          complete();
         }
-      }
-    };
 
-    template < typename Function, typename Arg, typename Result >
-    class Statement final : public Coupling {
-     public:
-      virtual ~Statement()
-      {
-        Coupling * value = pending.load( std::memory_order_relaxed );
-        if( value == sentinel() )
+        template < typename ...Args >
+        Continuation( Args && ...args )
+        : function( std::forward<Args>( args )... )
+        {}
+
+       protected:
+        using Super = Expression<Dispatch>;
+        using Super::pending;
+        using Super::sentinel;
+        using Super::next;
+        using Super::complete;
+
+        Container<Result> container;
+        Function function;
+      };
+      
+      template < typename Dispatch, typename Result >
+      class Argument final : public Expression<Dispatch> {
+       public:
+        virtual ~Argument()
         {
-          container.destruct();
+          Super * value = pending.load( std::memory_order_relaxed );
+          if( value == sentinel() )
+          {
+            container.destruct();
+          }
+          else
+          {
+            release( value );
+          }
         }
-        else
+
+        virtual void evaluate( void ) override
         {
-          release( value );
+          complete();
         }
-      }
 
-      virtual void evaluate( void ) override
-      {
-        apply( function, container, next->value<Arg>() );
-        complete();
-      }
-
-      template < typename ...Args >
-      Statement( Args && ...args )
-      : function( std::forward<Args>( args )... )
-      {}
-
-     protected:
-      Container<Result> container;
-      Function function;
-    };
-    
-    template < typename Result >
-    class Placeholder final : public Coupling {
-     public:
-      virtual ~Placeholder()
-      {
-        Coupling * value = pending.load( std::memory_order_relaxed );
-        if( value == sentinel() )
-        {
-          container.destruct();
-        }
-        else
-        {
-          release( value );
-        }
-      }
-
-      virtual void evaluate( void ) override
-      {
-        complete();
-      }
-
-     protected:
-      Container<Result> container;
-    };
- }
+       protected:
+        using Super = Expression<Dispatch>;
+        using Super::pending;
+        using Super::sentinel;
+        using Super::complete;
+        Container<Result> container;
+      };
+    }
+  }
 }

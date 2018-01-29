@@ -8,33 +8,44 @@ namespace rabid {
   template < typename Value >
   class Future {
    public:
+    using Dispatch = detail::expression::ImmediateDispatch;
+    using Concept = detail::expression::Expression<Dispatch>;
+    template < typename Function, typename Arg, typename Result >
+    using Expression = detail::expression::Continuation<Dispatch, Function, Arg, Result >;
+
     template < typename Function >
     auto then( Function && function )
       -> Future<typename function_traits<Function>::return_type>
     {
       using Result = typename function_traits<Function>::return_type;
-      referenced::Pointer<detail::Coupling> result{ new detail::Statement<Function,Value,Result>{ std::forward<Function>( function ) } };
+      referenced::Pointer<Concept> result{ new Expression<Function,Value,Result>{ std::forward<Function>( function ) } };
       value->chain( result );
       return result;
     }
 
-    Future( referenced::Pointer<detail::Coupling> && coupling )
+    Future( referenced::Pointer<Concept> && coupling )
     : value( std::move( coupling ) )
     {}
 
    protected:
-    referenced::Pointer<detail::Coupling> value;
+    referenced::Pointer<Concept> value;
   };
 
   template < typename Value >
   class Promise {
    public:
+    using Dispatch = typename Future<Value>::Dispatch;
+    using Concept = typename Future<Value>::Concept;
+    template < typename Function, typename Arg, typename Result >
+    using Expression = detail::expression::Continuation<Dispatch, Function, Arg, Result >;
+    using Argument = detail::expression::Argument<Dispatch, Value >;
+
     template < typename Function >
     auto then( Function && function )
       -> Future<typename function_traits<Function>::return_type>
     {
       using Result = typename function_traits<Function>::return_type;
-      referenced::Pointer<detail::Coupling> result{ new detail::Statement<Function,Value,Result>{ std::forward<Function>( function ) } };
+      referenced::Pointer<Concept> result{ new Expression<Function,Value,Result>{ std::forward<Function>( function ) } };
       value->chain( result );
       return result;
     }
@@ -47,10 +58,10 @@ namespace rabid {
     }
 
     Promise()
-    : value( new detail::Placeholder<Value>{} )
+    : value( new Argument{} )
     {}
 
    protected:
-    referenced::Pointer<detail::Placeholder<Value>> value;
+    referenced::Pointer<Argument> value;
     };
  }
