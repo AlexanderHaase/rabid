@@ -1,5 +1,7 @@
 #pragma once
 
+#include <tuple>
+
 #include "container.h"
 #include "../referenced.h"
 
@@ -149,6 +151,23 @@ namespace rabid {
         struct Prototype : Base { Member member; };
       };
 
+      /// Given *ALL* the super-classes *IN ORDER*, laterally cast to the specified super.
+      ///
+      template < class ...Supers >
+      class inheritance {
+       public:
+
+        template < typename Base1, typename Base2 >
+        static constexpr Base1 * lateral_cast( Base2 * base )
+        {
+          return static_cast<Base1*>( static_cast<Prototype*>( base ) );
+        }
+       private:
+        struct Prototype : Supers... {};
+      };
+
+      /// Evaluate expressions in the curren thread context.
+      ///
       struct ImmediateDispatch
       {
         template < typename T >
@@ -158,18 +177,44 @@ namespace rabid {
         }
       };
 
+      /// Expressions serve as the basis for lock-free, parallel continuations.
+      ///
+      /// The Expression class provides the core mechanics for chaining,
+      /// evaluating, and dispatching expressions. Expressions exist in an
+      /// unevaluated, ready, or done state. The members "pending" and
+      /// "variable" serve purposes 
+      ///
+      ///   - When unevaluated, "pending" is the head of a lock-free list of
+      ///     dependant expressions. If this expression depends on another,
+      ///     "variable" points to the next expression in that lock free list.
+      ///   - When ready, "variable" points to the expression supplying the
+      ///     the argument to this expression. The supplying expression then
+      ///     dispatches this expression for evaluation.
+      ///   - When done, "pending" points to this object and variable is null.
+      ///
+      /// Subclasses should call "complete()" when pending expressions may use
+      /// the result value of this expression.
+      ///
       template < typename Dispatch >
       class Expression : public referenced::Object<Expression<Dispatch>>, public Dispatch {
        public:
         /// Destructor, implementations clears result<T> and function<Y>
         ///
-        virtual ~Expression() = default;
+        virtual ~Expression()
+        {
+          release( pending.load( std::memory_order_relaxed ) );
+        }
 
         /// Evaluation, implementations chain from argument to result.
         ///
         virtual void evaluate() = 0;
 
-        /// Chain a coupling after this one.
+        template < typename ...Args >
+        Expression( Args && ...args )
+        : Dispatch( std::forward<Args>( args )... )
+        {}
+
+        /// Chain a expression after this one.
         ///
         void chain( referenced::Pointer<Expression> && expression )
         {
@@ -195,18 +240,25 @@ namespace rabid {
           }
         }
 
+        /// Chain a expression after this one.
+        ///
         void chain( const referenced::Pointer<Expression> & expression )
         {
           chain( referenced::Pointer<Expression>{ expression } );
         }
 
-        /// Uniform location access for container.
+        /// Access the result container of this expression
         ///
         template < typename Value >
-        Container<Value> & value()
+        Container<Value> & container()
         {
-          return *first_subclass_member<Expression,Container<Value>>::cast( this );
+          //return *first_subclass_member<Expression,Container<Value>>::cast( this );
+          return *inheritance<Expression,Container<Value>>::template lateral_cast<Container<Value>>( this );
         }
+
+        /// Check if the expression has been evalutated.
+        ///
+        bool done() { return pending.load( std::memory_order_relaxed ) == sentinel(); }
 
        protected:
         /// Head of linked list of dependant expressions
@@ -227,6 +279,7 @@ namespace rabid {
         ///
         void complete()
         {
+          variable = nullptr;
           referenced::Pointer<Expression> waiting;
           waiting.usurp( pending.exchange( sentinel(), std::memory_order_acquire ) );
           while( waiting )
@@ -239,71 +292,70 @@ namespace rabid {
         }
       };
 
-      template < typename Dispatch, typename Function, typename Arg, typename Result >
-      class Continuation final : public Expression<Dispatch> {
+      /// Abstract base class for storage of "Result" type.
+      ///
+      /// Allows for zero-size-base optimization.
+      ///
+      template < typename Dispatch, typename Result >
+      class StorageNode : public Expression<Dispatch>, protected Container<Result> {
        public:
-        virtual ~Continuation()
+        virtual ~StorageNode()
         {
-          Super * remainder = pending.load( std::memory_order_relaxed );
-          if( remainder == sentinel() )
+          if( done() )
           {
-            container.destruct();
-          }
-          else
-          {
-            release( remainder );
+            destruct();
           }
         }
 
+        using Expression<Dispatch>::Expression;
+       protected:
+        using Expression<Dispatch>::done;
+        using Container<Result>::destruct;
+      };
+
+      /// Expression that solely supplies an arguement.
+      ///
+      /// Final for optimization purposes.
+      ///
+      template < typename Dispatch, typename Result >
+      class Argument final : public StorageNode<Dispatch,Result> {
+       public:
         virtual void evaluate( void ) override
         {
-          apply( function, container, variable->template value<Arg>() );
           complete();
         }
 
-        template < typename ...Args >
-        Continuation( Args && ...args )
-        : function( std::forward<Args>( args )... )
+        using StorageNode<Dispatch,Result>::StorageNode;
+       protected:
+        using StorageNode<Dispatch,Result>::complete;
+      };
+
+      /// Expression class that continues after another expression.
+      ///
+      template < typename Dispatch, typename Function, typename Arg, typename Result >
+      class Continuation final : public StorageNode<Dispatch,Result> {
+       public:
+        virtual void evaluate( void ) override
+        {
+          apply( function, this->template container<Result>(), variable->template container<Arg>() );
+          complete();
+        }
+
+        template < typename DispatchSpec, typename ...Args >
+        Continuation( DispatchSpec && dispatch, Args && ...args )
+        : StorageNode<Dispatch,Result>( std::forward<DispatchSpec>( dispatch ) )
+        , function( std::forward<Args>( args )... )
         {}
 
-       protected:
-        using Super = Expression<Dispatch>;
-        using Super::pending;
-        using Super::sentinel;
-        using Super::variable;
-        using Super::complete;
+        /*template < typename ...Args >
+        Continuation( Args && ...args )
+        : function( std::forward<Args>( args )... )
+        {}*/
 
-        Container<Result> container;
+       protected:
+        using StorageNode<Dispatch,Result>::complete;
+        using StorageNode<Dispatch,Result>::variable;
         Function function;
-      };
-      
-      template < typename Dispatch, typename Result >
-      class Argument final : public Expression<Dispatch> {
-       public:
-        virtual ~Argument()
-        {
-          Super * remainder = pending.load( std::memory_order_relaxed );
-          if( remainder == sentinel() )
-          {
-            container.destruct();
-          }
-          else
-          {
-            release( remainder );
-          }
-        }
-
-        virtual void evaluate( void ) override
-        {
-          complete();
-        }
-
-       protected:
-        using Super = Expression<Dispatch>;
-        using Super::pending;
-        using Super::sentinel;
-        using Super::complete;
-        Container<Result> container;
       };
     }
   }

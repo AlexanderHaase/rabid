@@ -67,19 +67,23 @@ SCENARIO( "executor should run things in parallel" )
     THEN( "a task should run" )
     {
       std::atomic<size_t> count{ 0 };
+      std::atomic<size_t> followup{ 0 };
       using Exec = Executor<interconnect::Direct, ThreadModel>;
       Exec executor{};
 
-      executor.inject( 0, [&count]{
+      executor.inject( 0, [&count,&followup]{
           const auto limit = std::thread::hardware_concurrency();
           for( size_t index = 0; index < limit; ++index )
           {
-            Exec::async( index, [&count]{ count.fetch_add( 1 ); });
+            Exec::async( index, [&count]{ count.fetch_add( 1 ); })
+              .then( [&followup]{ followup.fetch_add( 1 ); })
+              .then( (index+1) % limit, [&followup]{ followup.fetch_add( 1 ); } );
           }
         });
 
       std::this_thread::sleep_for(std::chrono::milliseconds( 1000 ));
       REQUIRE( count == std::thread::hardware_concurrency() );
+      REQUIRE( followup == 2 * std::thread::hardware_concurrency() );
     }
   }
 }

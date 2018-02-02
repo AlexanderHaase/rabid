@@ -13,11 +13,21 @@ namespace rabid {
     using Expression = detail::expression::Continuation<Dispatch, Function, Arg, Result >;
 
     template < typename Function >
-    auto then( Function && function )
+    auto then( Function && function ) const
       -> Future<typename function_traits<Function>::return_type, Dispatch>
     {
       using Result = typename function_traits<Function>::return_type;
-      referenced::Pointer<Concept> result{ new Expression<Function,Value,Result>{ std::forward<Function>( function ) } };
+      referenced::Pointer<Concept> result{ new Expression<Function,Value,Result>{ static_cast<Dispatch&>( *value ), std::forward<Function>( function ) } };
+      value->chain( result );
+      return result;
+    }
+
+    template < typename DispatchSpec, typename Function >
+    auto then( DispatchSpec && dispatch, Function && function ) const
+      -> Future<typename function_traits<Function>::return_type, Dispatch>
+    {
+      using Result = typename function_traits<Function>::return_type;
+      referenced::Pointer<Concept> result{ new Expression<Function,Value,Result>{ std::forward<DispatchSpec>( dispatch ), std::forward<Function>( function ) } };
       value->chain( result );
       return result;
     }
@@ -43,7 +53,17 @@ namespace rabid {
       -> Future<typename function_traits<Function>::return_type, Dispatch>
     {
       using Result = typename function_traits<Function>::return_type;
-      referenced::Pointer<Concept> result{ new Expression<Function,Value,Result>{ std::forward<Function>( function ) } };
+      referenced::Pointer<Concept> result{ new Expression<Function,Value,Result>{ static_cast<Dispatch&>( *value ), std::forward<Function>( function ) } };
+      value->chain( result );
+      return result;
+    }
+
+    template < typename DispatchSpec, typename Function >
+    auto then( DispatchSpec && dispatch, Function && function ) const
+      -> Future<typename function_traits<Function>::return_type, Dispatch>
+    {
+      using Result = typename function_traits<Function>::return_type;
+      referenced::Pointer<Concept> result{ new Expression<Function,Value,Result>{ std::forward<DispatchSpec>( dispatch ), std::forward<Function>( function ) } };
       value->chain( result );
       return result;
     }
@@ -51,12 +71,17 @@ namespace rabid {
     template < typename ...Args >
     void complete( Args && ... args )
     {
-      value->template value<Value>().construct( std::forward<Args>( args )... );
+      value->template container<Value>().construct( std::forward<Args>( args )... );
       value->evaluate();
     }
 
     Promise()
     : value( new Argument{} )
+    {}
+
+    template < typename DispatchSpec >
+    Promise( DispatchSpec && dispatch )
+    : value( new Argument{ std::forward<DispatchSpec>( dispatch ) } )
     {}
 
    protected:

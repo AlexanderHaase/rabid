@@ -131,8 +131,7 @@ namespace rabid {
     static auto async( size_t index, Function && function )
       -> TaskFuture<Function>
     {
-      auto task = make_task( std::forward<Function>( function ) );
-      task->address = index;
+      auto task = make_task( index, std::forward<Function>( function ) );
       acquire( task );
       current_worker->send( task );
       return task;
@@ -147,8 +146,7 @@ namespace rabid {
     template< typename Function >
     void inject( size_t index, Function && function )
     {
-      auto task = make_task( std::forward<Function>( function ) );
-      task->address = index;
+      auto task = make_task( index, std::forward<Function>( function ) );
       workers[ index ].send( task.leak() );
     }
 
@@ -160,7 +158,18 @@ namespace rabid {
       delay
     };
 
-    struct TaskDispatch : interconnect::Message {
+    struct TaskDispatch : public interconnect::Message {
+     public:
+      TaskDispatch( size_t index )
+      : address( index )
+      {}
+
+      struct Unused {};
+
+      TaskDispatch( const Unused & )
+      {
+        next() = nullptr;
+      }
       size_t address;
 
       template < typename T >
@@ -183,12 +192,13 @@ namespace rabid {
 
     static_assert( valid_static_cast<Task,interconnect::Message>::value, "Incompatible implementation!" );
 
-    template < typename Function,
+    template < typename DispatchSpec,
+      typename Function,
       typename Arg = function_arg_t<Function,0>,
       typename Result = typename function_traits<Function>::return_type >
-    static referenced::Pointer<Task> make_task( Function && function )
+    static referenced::Pointer<Task> make_task( DispatchSpec && dispatch, Function && function )
     {
-      return new Continuation<Function, Arg, Result>{ std::forward<Function>( function ) };
+      return new Continuation<Function, Arg, Result>{ std::forward<DispatchSpec>( dispatch ), std::forward<Function>( function ) };
     }
 
     class Worker {
@@ -281,7 +291,7 @@ namespace rabid {
       {
         if( prepare_idle )
         {
-          auto task = make_task( [&idle](){ idle.interrupt(); } );
+          auto task = make_task( typename TaskDispatch::Unused{}, [&idle](){ idle.interrupt(); } );
           task->next() = nullptr;
           TaggedPointer<Task> tagged{ task.leak(), Tag::reverse };
           return tagged;
