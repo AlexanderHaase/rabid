@@ -1,11 +1,11 @@
 #pragma once
 
 #include "interconnect.h"
+#include "future.h"
 
 #include <thread>
 #include <condition_variable>
 #include <functional>
-
 
 namespace rabid {
 
@@ -77,85 +77,116 @@ namespace rabid {
 
   template < typename Interconnect, typename ExecutionModel >
   class Executor {
+   protected:
+    struct TaskDispatch;
+
+    template <typename Function>
+    using TaskFuture = Future<typename function_traits<Function>::return_type, TaskDispatch>;
    public:
     template < typename Function >
-    static void async( size_t index, Function && function )
+    static auto async( size_t index, Function && function )
+      -> TaskFuture<Function>
     {
-      current_worker->send( index, std::forward<Function>( function ) );
+      auto task = make_task( std::forward<Function>( function ) );
+      task->address = index;
+      acquire( task );
+      current_worker->send( task );
+      return task;
     }
 
-    Executor( size_t cache, size_t size = std::thread::hardware_concurrency() )
+    Executor( size_t size = std::thread::hardware_concurrency() )
     : interconnect( size )
-    , workers( make_workers( interconnect, size, cache ) )
+    , workers( make_workers( interconnect, size ) )
     , execution( workers.begin(), workers.end() )
     {}
 
     template< typename Function >
     void inject( size_t index, Function && function )
     {
-      TaggedPointer<Task> task{ new Task{}, Task::Tag::normal };
-      task->executable = std::forward<Function>( function );
-      TaggedPointer<Task> wake{};
-      interconnect.node( 0 ).route( index ).send( task.template cast<typename interconnect::Message>(), [&wake]( const interconnect::Message::PointerType & prior )
-        {
-          wake = prior.cast<Task>();
-          switch( prior.tag< typename Task::Tag>() )
-          {
-            case( Task::Tag::reverse ):
-              return interconnect::Message::PointerType{ nullptr, Task::Tag::normal };
-            default:
-              return prior;
-          }
-        });
-
-      if( wake.template tag< typename Task::Tag>() == Task::Tag::reverse )
-      {
-        wake->executable();
-      }
+      auto task = make_task( std::forward<Function>( function ) );
+      task->address = index;
+      workers[ index ].send( task.leak() );
     }
-    
-   protected:
-    using Executable = std::function<void()>;
 
-    struct Task : public interconnect::Message {
-      enum class Tag {
-        normal,
-        reverse,
-        delay
-      };
-      Executable executable;
+   protected:
+
+    enum class Tag {
+      normal,
+      reverse,
+      delay
     };
 
-    static_assert( valid_static_cast<Task,interconnect::Message>::value, "Wahahah" );
+    struct TaskDispatch : interconnect::Message {
+      size_t address;
+
+      template < typename T >
+      friend void dispatch( T && task )
+      {
+        current_worker->send( task );
+        task.leak();
+      }
+    };
+
+    using Task = detail::expression::Expression<TaskDispatch>;
+
+    template < typename Function, size_t Index, typename Traits = function_traits<Function> >
+    using function_arg_t = typename std::conditional<(Index < Traits::nargs), typename Traits::template args<Index>, void >::type;
+
+    template < typename Function,
+      typename Arg = function_arg_t<Function,0>,
+      typename Result = typename function_traits<Function>::return_type >
+    using Continuation = detail::expression::Continuation<TaskDispatch,Function,Arg,Result>;
+
+    static_assert( valid_static_cast<Task,interconnect::Message>::value, "Incompatible implementation!" );
+
+    template < typename Function,
+      typename Arg = function_arg_t<Function,0>,
+      typename Result = typename function_traits<Function>::return_type >
+    static referenced::Pointer<Task> make_task( Function && function )
+    {
+      return new Continuation<Function, Arg, Result>{ std::forward<Function>( function ) };
+    }
 
     class Worker {
      public:
-      Worker( const typename Interconnect::NodeType & node_arg, size_t capacity )
+      Worker( const typename Interconnect::NodeType & node_arg )
       : node( node_arg )
-      , cache( capacity )
       {}
 
-      template < typename Function >
-      void send( size_t index, Function && function )
+      ~Worker()
       {
-        auto task = cache.capture( std::forward<Function>( function ), Task::Tag::normal );
-        task.tag( Task::Tag::normal );
-        TaggedPointer<Task> wake{};
-        node.route( index ).send( task.template cast<typename interconnect::Message>(), [&wake]( const interconnect::Message::PointerType & prior )
+        auto sentinel = TaggedPointer<Task>{ nullptr, Tag::normal }.template cast<interconnect::Message>();
+        for( auto & connection : node.all() )
+        {
+          auto batch = connection.receive( sentinel );
+          while( !batch.empty() )
+          {
+            auto task = batch.remove().template cast<Task>();
+            release( task );
+          }
+        }
+      }
+      
+      void send( Task * task )
+      {
+        TaggedPointer<Task> tagged{ task, Tag::normal };
+        TaggedPointer<Task> wake;
+        node.route( task->address ).send( tagged.template cast<typename interconnect::Message>(), [&wake]( const interconnect::Message::PointerType & prior )
           {
             wake = prior.cast<Task>();
-            switch( prior.tag< typename Task::Tag>() )
+            switch( prior.tag<Tag>() )
             {
-              case( Task::Tag::reverse ):
-                return interconnect::Message::PointerType{ nullptr, Task::Tag::normal };
+              case( Tag::reverse ):
+                return interconnect::Message::PointerType{ nullptr, Tag::normal };
               default:
                 return prior;
             }
           });
 
-        if( wake.template tag< typename Task::Tag>() == Task::Tag::reverse )
+        if( wake.template tag<Tag>() == Tag::reverse )
         {
-          wake->executable();
+          wake->evaluate();
+          release( wake );
         }
       }
 
@@ -173,8 +204,8 @@ namespace rabid {
             while( !batch.empty() )
             {
               auto task = batch.remove().template cast<Task>();
-              task->executable();
-              cache.put( task );
+              task->evaluate();
+              release( task );
             }
           }
 
@@ -195,78 +226,26 @@ namespace rabid {
       {
         if( prepare_idle )
         {
-          return cache.capture( [&idle](){ idle.interrupt(); }, Task::Tag::reverse );
+          auto task = make_task( [&idle](){ idle.interrupt(); } );
+          TaggedPointer<Task> tagged{ task.leak(), Tag::reverse };
+          return tagged;
         }
         else
         {
-          return TaggedPointer<Task>{ nullptr, Task::Tag::normal };
+          return TaggedPointer<Task>{ nullptr, Tag::normal };
         }
       }
 
-      class TaskCache {
-       public:
-        TaggedPointer<Task> get( typename Task::Tag tag )
-        {
-          TaggedPointer<Task> result;
-          if( cache.size() )
-          {
-            result = TaggedPointer<Task>( cache.back().get(), tag );
-            cache.pop_back();
-          }
-          else
-          {
-            result = TaggedPointer<Task>( new Task{}, tag );
-          }
-          return result;
-        }
-
-        template < typename Function >
-        TaggedPointer<Task> capture( Function && function, typename Task::Tag tag )
-        {
-          auto result = get( tag );
-          result->executable = std::forward<Function>( function );
-          return result;
-        }
-
-        void put( const TaggedPointer<Task> & task )
-        {
-          if( cache.size() < cache.capacity() )
-          {
-            cache.emplace_back( task );
-          }
-          else
-          {
-            delete task.get();
-          }
-        }
-
-        TaskCache( size_t capacity )
-        {
-          cache.reserve( capacity );
-        }
-
-        ~TaskCache()
-        {
-          for( auto & task : cache )
-          {
-            delete task.get();
-          }
-        }
-       protected:
-        std::vector<TaggedPointer<Task>> cache;
-      };
-
       const typename Interconnect::NodeType & node;
-      TaskCache cache;
     };
 
-    static std::vector<Worker> make_workers( Interconnect & interconnect, size_t count, size_t cache )
+    static std::vector<Worker> make_workers( Interconnect & interconnect, size_t count )
     {
       std::vector<Worker> workers;
       workers.reserve( count );
       for( size_t index = 0; index < count; ++index )
       {
-        workers.emplace_back( interconnect.node( index ), cache );
+        workers.emplace_back( interconnect.node( index ) );
       }
       return workers;
     }

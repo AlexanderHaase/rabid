@@ -1,6 +1,7 @@
 #pragma once
 
 #include "container.h"
+#include "../referenced.h"
 
 namespace rabid {
 
@@ -170,29 +171,33 @@ namespace rabid {
 
         /// Chain a coupling after this one.
         ///
-        void chain( const referenced::Pointer<Expression> & expression )
+        void chain( referenced::Pointer<Expression> && expression )
         {
-          acquire( expression );
           for(;;)
           {
             Expression * prior = pending.load( std::memory_order_relaxed );
             if( prior == sentinel() )
             {
-              release( expression );
-              expression->next = this;
+              expression->variable = this;
               dispatch( expression );
               break;
             }
-            expression->next.usurp( prior );
+            expression->variable.usurp( prior );
             if( pending.compare_exchange_strong( prior, expression, std::memory_order_relaxed ) )
             {
+              expression.leak();
               break;
             }
             else
             {
-              expression->next.leak();
+              expression->variable.leak();
             }
           }
+        }
+
+        void chain( const referenced::Pointer<Expression> & expression )
+        {
+          chain( referenced::Pointer<Expression>{ expression } );
         }
 
         /// Uniform location access for container.
@@ -212,7 +217,7 @@ namespace rabid {
         ///  - Element for participating in linked lists.
         ///  - Points to argument of evaluation.
         ///
-        referenced::Pointer<Expression> next;
+        referenced::Pointer<Expression> variable;
 
         /// Sentinel value for linked list
         ///
@@ -226,9 +231,9 @@ namespace rabid {
           waiting.usurp( pending.exchange( sentinel(), std::memory_order_acquire ) );
           while( waiting )
           {
-            auto next = std::move( waiting->next );
-            waiting->next = this;
-            dispatch( waiting );
+            auto next = std::move( waiting->variable );
+            waiting->variable = this;
+            dispatch( std::move( waiting ) );
             waiting = std::move( next );
           }
         }
@@ -239,20 +244,20 @@ namespace rabid {
        public:
         virtual ~Continuation()
         {
-          Super * value = pending.load( std::memory_order_relaxed );
-          if( value == sentinel() )
+          Super * remainder = pending.load( std::memory_order_relaxed );
+          if( remainder == sentinel() )
           {
             container.destruct();
           }
           else
           {
-            release( value );
+            release( remainder );
           }
         }
 
         virtual void evaluate( void ) override
         {
-          apply( function, container, next->template value<Arg>() );
+          apply( function, container, variable->template value<Arg>() );
           complete();
         }
 
@@ -265,7 +270,7 @@ namespace rabid {
         using Super = Expression<Dispatch>;
         using Super::pending;
         using Super::sentinel;
-        using Super::next;
+        using Super::variable;
         using Super::complete;
 
         Container<Result> container;
@@ -277,14 +282,14 @@ namespace rabid {
        public:
         virtual ~Argument()
         {
-          Super * value = pending.load( std::memory_order_relaxed );
-          if( value == sentinel() )
+          Super * remainder = pending.load( std::memory_order_relaxed );
+          if( remainder == sentinel() )
           {
             container.destruct();
           }
           else
           {
-            release( value );
+            release( remainder );
           }
         }
 

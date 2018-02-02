@@ -1,6 +1,6 @@
 #include "include/function_traits.h"
 #include "include/future.h"
-#include "include/detail/coupling.h"
+#include "include/detail/expression.h"
 
 #include <iostream>
 
@@ -17,14 +17,29 @@ namespace rabid {
 
 int main()
 {
-  rabid::Promise<int> promise;
-  auto before = promise.then( []( int value ) { std::cout << "before: " << value << std::endl; return value; } );
-  before
-    .then([]( int value ) { return value + 1; })
-    .then([]( int value ) { return value + 1; })
-    .then([]( int value ) { std::cout << "deep: " << value << std::endl; return value; });
-  promise.complete( 0 );
-  auto after = promise.then( []( int value ) { std::cout << "after: " << value << std::endl; return value; } );
+  {
+    rabid::Promise<int> promise;
+    auto before = promise.then( []( int value ) { std::cout << "before: " << value << std::endl; return value; } );
+    before
+      .then([]( int value ) { return value + 1; })
+      .then([]( int value ) { return value + 1; })
+      .then([]( int value ) { std::cout << "deep: " << value << std::endl; return value; });
+    promise.complete( 0 );
+    auto after = promise.then( []( int value ) { std::cout << "after: " << value << std::endl; return value; } );
+  }
+
+  // loop check for leaks
+  for( size_t index = 0; index < 1000; ++index )
+  {
+    rabid::Promise<int> promise;
+    auto before = promise.then( []( int value ) { return value; } );
+    before
+      .then([]( int value ) { return value + 1; })
+      .then([]( int value ) { return value + 1; })
+      .then([]( int value ) { return value * 10; });
+    promise.complete( 0 );
+    auto after = promise.then( []( int value ) { return value; } );
+  }
 
   rabid::detail::Container<void> void_value;
   rabid::detail::apply( []{ std::cout << "void -> void" << std::endl; }, void_value, void_value );

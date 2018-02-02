@@ -1,8 +1,64 @@
 #include <catch.hpp>
-
 #include <Executor.h>
+#include <iostream>
 
 using namespace rabid;
+
+struct Test : referenced::Object<Test> {
+  static std::atomic<size_t> active;
+
+  Test()
+  {
+    active.fetch_add( 1 );
+  }
+
+  ~Test()
+  {
+    active.fetch_add( -1 );
+  }
+};
+
+std::atomic<size_t> Test::active{ 0 };
+
+SCENARIO( "referenced::Pointer should behave according to refptr semantics" )
+{
+  GIVEN( "a test object type" )
+  {
+    THEN( "referenced::Pointer should adequately hand lifecycles" )
+    {
+      REQUIRE( Test::active.load() == 0 );
+      referenced::Pointer<Test> a{ new Test{} };
+      REQUIRE( Test::active.load() == 1 );
+      referenced::Pointer<Test> b = a;
+      REQUIRE( Test::active.load() == 1 );
+      a = new Test{};
+      REQUIRE( Test::active.load() == 2 );
+      b = new Test{};
+      REQUIRE( Test::active.load() == 2 );
+      a = nullptr;
+      REQUIRE( Test::active.load() == 1 );
+      b = std::move( a );
+      REQUIRE( Test::active.load() == 0 );
+    }
+
+    THEN( "usurping/leaking pointers shouldn't affect the reference count" )
+    {
+      Test * val = new Test{};
+      acquire( val );
+      referenced::Pointer<Test> a;
+      REQUIRE( Test::active.load() == 1 );
+      a.usurp( val );
+      REQUIRE( Test::active.load() == 1 );
+      a.leak();
+      REQUIRE( Test::active.load() == 1 );
+      a.leak();
+      REQUIRE( Test::active.load() == 1 );
+      release( val );
+      REQUIRE( Test::active.load() == 0 );
+    }
+  }
+}
+
 
 SCENARIO( "executor should run things in parallel" )
 {
@@ -12,7 +68,7 @@ SCENARIO( "executor should run things in parallel" )
     {
       std::atomic<size_t> count{ 0 };
       using Exec = Executor<interconnect::Direct, ThreadModel>;
-      Exec executor{ 1 };
+      Exec executor{};
 
       executor.inject( 0, [&count]{
           const auto limit = std::thread::hardware_concurrency();

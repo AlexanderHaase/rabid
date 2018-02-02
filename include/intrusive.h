@@ -45,6 +45,9 @@ namespace rabid {
 
     TaggedPointer() = default;
 
+    static const size_t bits = TagBits;
+    using type = Type;
+
     template < typename TagType = uintptr_t >
     constexpr explicit TaggedPointer( Type * value_arg, TagType tag_arg = 0 )
     : value( reinterpret_cast<uintptr_t>( value_arg ) | static_cast<uintptr_t>( tag_arg ) )

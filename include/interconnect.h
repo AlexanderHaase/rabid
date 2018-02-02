@@ -33,7 +33,10 @@ namespace rabid {
       }
 
       template < typename Prepare >
-      void send( const Message::PointerType & message, Prepare && prepare ) const { remote.insert( message, std::forward<Prepare>( prepare ) ); }
+      void send( const Message::PointerType & message, Prepare && prepare ) const
+      {
+        remote.insert( message, std::forward<Prepare>( prepare ) );
+      }
 
       Batch receive( const Message::PointerType & message ) const { return local.clear( message ); }      
       
