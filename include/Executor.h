@@ -9,9 +9,9 @@
 
 namespace rabid {
 
-  class ThreadModel {
-   public:
-    class Idle {
+  namespace detail {
+
+    class ConservativeIdle {
      public:
       bool yeild()
       {
@@ -43,6 +43,50 @@ namespace rabid {
       std::condition_variable condition;
       bool enabled = true;
     };
+
+    class FastIdle {
+     public:
+      bool yeild()
+      {
+        std::unique_lock<std::mutex> lock( mutex );
+        if( enabled )
+        {
+          indicator.store( &mutex, std::memory_order_relaxed );
+          condition.wait( lock );
+        }
+        return enabled;
+      }
+
+      void interrupt()
+      {
+        auto signal = indicator.exchange( nullptr, std::memory_order_relaxed );
+        if( signal )
+        {
+          std::unique_lock<std::mutex> lock( mutex );
+          lock.unlock();
+          condition.notify_one();
+        }
+      }
+
+      void enable( bool value )
+      {
+        std::unique_lock<std::mutex> lock( mutex );
+        enabled = value;
+        lock.unlock();
+        condition.notify_one();
+      }
+
+     protected:
+      std::atomic<std::mutex*> indicator;
+      std::mutex mutex;
+      std::condition_variable condition;
+      bool enabled = true;
+    };
+  }
+
+  class ThreadModel {
+   public:
+    using Idle = detail::FastIdle;
 
     template < typename Iterator >
     ThreadModel( const Iterator & begin, const Iterator & end )
@@ -194,9 +238,10 @@ namespace rabid {
       void operator()( Idle && idle )
       {
         current_worker = this;
+        bool prepare_idle = false;
         for(;;)
         {
-          bool prepare_idle = true;
+          size_t processed = 0;
           for( auto & connection : node.all() )
           {
             auto sentinel = make_sentinel( idle, prepare_idle ).template cast<interconnect::Message>();
@@ -204,17 +249,27 @@ namespace rabid {
             while( !batch.empty() )
             {
               auto task = batch.remove().template cast<Task>();
-              task->evaluate();
+              if( task.template tag<Tag>() == Tag::normal )
+              {
+                task->evaluate();
+                processed += 1;
+              }
               release( task );
             }
           }
-
-          if( prepare_idle )
+          if( processed == 0 )
           {
-            bool exit = !idle.yeild();
-            if( exit )
+            if( prepare_idle )
             {
-              break;
+              bool exit = !idle.yeild();
+              if( exit )
+              {
+                break;
+              }
+            }
+            else
+            {
+              prepare_idle = true;
             }
           }
         }
@@ -227,6 +282,7 @@ namespace rabid {
         if( prepare_idle )
         {
           auto task = make_task( [&idle](){ idle.interrupt(); } );
+          task->next() = nullptr;
           TaggedPointer<Task> tagged{ task.leak(), Tag::reverse };
           return tagged;
         }
