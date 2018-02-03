@@ -126,6 +126,7 @@ namespace rabid {
 
     template <typename Function>
     using TaskFuture = Future<typename function_traits<Function>::return_type, TaskDispatch>;
+
    public:
     template < typename Function >
     static auto async( size_t index, Function && function )
@@ -139,7 +140,7 @@ namespace rabid {
 
     Executor( size_t size = std::thread::hardware_concurrency() )
     : interconnect( size )
-    , workers( make_workers( interconnect, size ) )
+    , workers( make_workers( interconnect, size, *this ) )
     , execution( workers.begin(), workers.end() )
     {}
 
@@ -149,6 +150,9 @@ namespace rabid {
       auto task = make_task( index, std::forward<Function>( function ) );
       workers[ index ].send( task.leak() );
     }
+
+    static size_t concurrency() { return current_worker->parent.workers.size(); }
+    static size_t index() { return current_worker->index; }
 
    protected:
 
@@ -203,8 +207,10 @@ namespace rabid {
 
     class Worker {
      public:
-      Worker( const typename Interconnect::NodeType & node_arg )
+      Worker( const typename Interconnect::NodeType & node_arg, const Executor & parent_arg, const size_t index_arg )
       : node( node_arg )
+      , parent( parent_arg )
+      , index( index_arg )
       {}
 
       ~Worker()
@@ -303,15 +309,19 @@ namespace rabid {
       }
 
       const typename Interconnect::NodeType & node;
+
+     public:
+      const Executor & parent;
+      const size_t index;
     };
 
-    static std::vector<Worker> make_workers( Interconnect & interconnect, size_t count )
+    static std::vector<Worker> make_workers( Interconnect & interconnect, size_t count, const Executor & parent )
     {
       std::vector<Worker> workers;
       workers.reserve( count );
       for( size_t index = 0; index < count; ++index )
       {
-        workers.emplace_back( interconnect.node( index ) );
+        workers.emplace_back( interconnect.node( index ), parent, index );
       }
       return workers;
     }

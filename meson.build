@@ -55,3 +55,8 @@ subdir( 'test' )
 
 # TODO: Example program
 #
+comparison = executable( 'comparison', 'comparison.cpp', 
+	include_directories : base_includes,
+  dependencies: base_dependencies,
+	cpp_args : cpp_flags )
+
