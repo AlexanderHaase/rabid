@@ -435,7 +435,6 @@ auto freq_with_threads2( const MappedFile & file,
         while( !tokenizer.empty() )
         {
           auto token = tokenizer.next();
-          //auto bucket = *token.begin % state.concurrency;
           state.buckets[ index ].apply( token, []( Freq & freq ) { freq.count += 1; } );
         }
       }
@@ -480,23 +479,6 @@ int main( int, char ** argv )
     const auto duration = freq_with_threads2<char>( file, 10 );
     std::cout << std::chrono::duration_cast<std::chrono::microseconds>( duration ).count() << " usec" << std::endl;
   }
-  /*
-  size_t count = 0;
-  Tokenizer<char> tokenizer( file.array<char>(), file.size<char>() );
-  std::unordered_map<Token<char>,Freq> counts;
-  while( !tokenizer.empty() )
-  {
-    const auto token = tokenizer.next();
-    counts[ token ].count += 1;
-    count += 1;
-  }
 
-  for( auto & pair : counts )
-  {
-    std::cout << "'" << pair.first << "': " << pair.second.count << std::endl;
-  }
-  
-  std::cout << file.size<uint8_t>() << " " << count << std::endl;
-  */
   return 0;
 }

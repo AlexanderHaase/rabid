@@ -170,17 +170,7 @@ namespace rabid {
 
     struct TaskDispatch : public interconnect::Message {
      public:
-      TaskDispatch( size_t index )
-      : address( index )
-      {}
-
-      struct Unused {};
-
-      TaskDispatch( const Unused & )
-      {
-        next() = nullptr;
-      }
-      size_t address;
+      using interconnect::Message::Message;
 
       template < typename T >
       friend void dispatch( T && task )
@@ -237,7 +227,7 @@ namespace rabid {
       {
         TaggedPointer<Task> tagged{ task, Tag::normal };
         TaggedPointer<Task> wake;
-        node.route( task->address ).send( tagged.template cast<typename interconnect::Message>(), [&wake]( const interconnect::Message::PointerType & prior )
+        node.send( tagged.template cast<typename interconnect::Message>(), [&wake]( const interconnect::Message::PointerType & prior )
           {
             wake = prior.cast<Task>();
             switch( prior.tag<Tag>() )
@@ -303,7 +293,7 @@ namespace rabid {
       {
         if( prepare_idle )
         {
-          auto task = make_task( typename TaskDispatch::Unused{}, [&idle](){ idle.interrupt(); } );
+          auto task = make_task( typename TaskDispatch::Unaddressed{}, [&idle](){ idle.interrupt(); } );
           task->next() = nullptr;
           TaggedPointer<Task> tagged{ task.leak(), Tag::reverse };
           return tagged;
@@ -337,7 +327,6 @@ namespace rabid {
     ExecutionModel execution;
     static thread_local Worker * current_worker;
   };
-  
 
   template < typename Interconnect, typename ExecutionModel >
   thread_local typename Executor<Interconnect,ExecutionModel>::Worker * Executor<Interconnect,ExecutionModel>::current_worker = nullptr;

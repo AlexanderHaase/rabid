@@ -8,7 +8,7 @@
 namespace rabid {
 
   namespace referenced {
-    template < typename Base >
+    template < typename Base, typename Deleter = std::default_delete<Base> >
     class Object {
      public:
       friend void acquire( Base * base )
@@ -22,7 +22,7 @@ namespace rabid {
       {
         if( base && 1 == base->references.fetch_add( -1, std::memory_order_relaxed ) )
         { 
-          delete base;
+          Deleter{}( base );
         }
       }
      protected:

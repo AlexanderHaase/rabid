@@ -113,7 +113,6 @@ namespace rabid {
   template < typename Type >
   using add_tagged_pointer_t = typename add_tagged_pointer<Type>::type;
 
-
   template < size_t TagBits >
   struct tagged_pointer_bits {
     template < typename Type >
@@ -122,19 +121,19 @@ namespace rabid {
 
   namespace intrusive {
 
-    template< template< typename > class Pointer = std::add_pointer_t >
+    template< typename Subclass, template< typename > class Pointer = std::add_pointer_t >
     class Link {
      public:
-      using PointerType = Pointer<Link>;
+      using PointerType = Pointer<Subclass>;
 
       template < typename Container >
-      Container & container( Link Container::* pointer )
+      Container & container( Subclass Container::* pointer )
       {
         return container_of( this, pointer );
       }
 
       template < typename Container >
-      Container & container( Link Container::* pointer ) const
+      Container & container( Subclass Container::* pointer ) const
       {
         return container_of( this, pointer );
       }

@@ -5,22 +5,40 @@
 
 namespace rabid {
 
-  template < size_t Amount >
-  class Padding {
-    std::uint8_t fill[ Amount ];
-  };
+  namespace detail {
+    template < size_t Amount >
+    class Padding {
+      std::uint8_t fill[ Amount ];
+    };
 
-  template <>
-  class Padding<0> {};
-  
-  template < typename Type, size_t Alignment = std::min( size_t{128}, alignof( Type ) ) >
-  struct alignas(Alignment) CacheAligned : public Type, private Padding< sizeof(Type) - Alignment > {};
+    template <>
+    class Padding<0> {};
+    
+    template < typename Type, size_t Alignment = std::min( size_t{128}, alignof( Type ) ) >
+    struct alignas(Alignment) CacheAligned : public Type {
+     private:
+      Padding< sizeof(Type) - Alignment > padding{};
+    };
+  }
 
   namespace interconnect {
 
-    using Message = intrusive::Link< tagged_pointer_bits<3>::type >;
+    struct Message : intrusive::Link< Message, tagged_pointer_bits<3>::type >
+    {
+      Message( size_t index )
+      : address( index )
+      {}
 
-    using Buffer = CacheAligned< intrusive::Exchange<Message> >;
+      struct Unaddressed {};
+
+      Message( const Unaddressed & )
+      {
+        next() = nullptr;
+      }
+      size_t address;
+    };
+
+    using Buffer = detail::CacheAligned< intrusive::Exchange<Message> >;
 
     using Batch = intrusive::List<Message>;
 
@@ -55,7 +73,13 @@ namespace rabid {
     template < typename AddressMap >
     class Node : protected AddressMap {
      public:
-      const Connection & route( size_t index ) const { return connections[ AddressMap::operator()( index ) ]; }
+      const Connection & route( const Message & message ) const { return connections[ AddressMap::operator()( message.address ) ]; }
+
+      template < typename Prepare >
+      void send( const Message::PointerType & message, Prepare && prepare ) const
+      {
+        route( *message ).send( message, std::forward<Prepare>( prepare ) );
+      }
 
       template < typename ...Args >
       Node( std::vector<Connection> connections_arg, Args && ... args )
