@@ -11,58 +11,28 @@ namespace rabid {
 
   namespace detail {
 
-    class ConservativeIdle {
-     public:
-      bool yeild()
-      {
-        std::unique_lock<std::mutex> lock( mutex );
-        if( enabled )
-        {
-          condition.wait( lock );
-        }
-        return enabled;
-      }
-
-      void interrupt()
-      {
-        std::unique_lock<std::mutex> lock( mutex );
-        lock.unlock();
-        condition.notify_one();
-      }
-
-      void enable( bool value )
-      {
-        std::unique_lock<std::mutex> lock( mutex );
-        enabled = value;
-        lock.unlock();
-        condition.notify_one();
-      }
-
-     protected:
-      std::mutex mutex;
-      std::condition_variable condition;
-      bool enabled = true;
-    };
-
     class FastIdle {
      public:
       bool yeild()
       {
-        std::unique_lock<std::mutex> lock( mutex );
+        std::unique_lock<std::mutex> lock{ mutex };
         if( enabled )
         {
-          indicator.store( &mutex, std::memory_order_relaxed );
-          condition.wait( lock );
+          if( armed.load( std::memory_order_relaxed ) )
+          {
+            condition.wait( lock );
+          }
+          armed.store( true, std::memory_order_relaxed );
         }
         return enabled;
       }
 
       void interrupt()
       {
-        auto signal = indicator.exchange( nullptr, std::memory_order_relaxed );
+        auto signal = armed.exchange( false, std::memory_order_relaxed );
         if( signal )
         {
-          std::unique_lock<std::mutex> lock( mutex );
+          std::unique_lock<std::mutex> lock{ mutex };
           lock.unlock();
           condition.notify_one();
         }
@@ -70,17 +40,53 @@ namespace rabid {
 
       void enable( bool value )
       {
-        std::unique_lock<std::mutex> lock( mutex );
+        std::unique_lock<std::mutex> lock{ mutex };
         enabled = value;
         lock.unlock();
         condition.notify_one();
       }
 
      protected:
-      std::atomic<std::mutex*> indicator;
+      std::atomic<bool> armed{true};
       std::mutex mutex;
       std::condition_variable condition;
       bool enabled = true;
+    };
+
+    class Join {
+     public:
+      Join( ssize_t events ) 
+      : count( events )
+      {}
+
+      void reset( ssize_t events )
+      {
+        count.store( events, std::memory_order_relaxed );
+      }
+
+      void wait()
+      {
+        std::unique_lock<std::mutex> lock{ mutex };
+        if( count.load( std::memory_order_relaxed ) )
+        {
+          condition.wait( lock );
+        }
+      }
+
+      void notify( ssize_t amount = 1 )
+      {
+        if( count.fetch_add( -amount, std::memory_order_relaxed ) == 1 )
+        {
+          mutex.lock();
+          mutex.unlock();
+          condition.notify_all();
+        }
+      }
+
+     protected:
+      std::atomic<ssize_t> count;
+      std::mutex mutex;
+      std::condition_variable condition;
     };
   }
 
@@ -152,7 +158,7 @@ namespace rabid {
     }
 
     static size_t concurrency() { return current_worker->parent.workers.size(); }
-    static size_t index() { return current_worker->index; }
+    static size_t current() { return current_worker->index; }
 
    protected:
 

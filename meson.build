@@ -13,9 +13,9 @@ cpp_flags = [ '-std=c++14',
 	'-Wdouble-promotion',
 	'-Wshadow',
 	'-Wformat=2',
-  #'-flto', # Does not play well with clang
-	#'-Ofast'
-  '-O0'
+  '-flto', # Does not play well with clang
+	'-Ofast'
+  #'-O0'
   ]
 
 cpp_lint_flags = [

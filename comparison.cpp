@@ -2,6 +2,7 @@
 #include <limits>
 #include <unordered_map>
 #include <iostream>
+#include <chrono>
 
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -200,16 +201,287 @@ namespace std {
   };
 }
 
+struct Freq {
+  size_t count = 0;
+};
+
+
+template <typename CharT>
+auto freq_with_executor( const MappedFile & file,
+  size_t jobs_multiplier = 1,
+  size_t concurrency = std::thread::hardware_concurrency() )
+  -> std::chrono::steady_clock::duration
+{
+  using Exec = rabid::Executor<rabid::interconnect::Direct, rabid::ThreadModel >;
+  Exec executor{ concurrency };
+
+  const auto jobs = concurrency * jobs_multiplier;
+  const auto stride = file.size<CharT>() / jobs;
+
+  using FreqMap = std::unordered_map<Token<CharT>,Freq>;
+  const auto map = std::make_unique<FreqMap[]>( concurrency );
+
+  using rabid::detail::Join;
+
+  struct Job {
+    Token<CharT> token;
+    Tokenizer<CharT> tokenizer;
+    FreqMap * buckets;
+    Join & join;
+
+    void operator() ()
+    {
+      const auto index = Exec::current();
+      for(;;)
+      {
+        buckets[ index ][ token ].count += 1;
+        if( tokenizer.empty() )
+        {
+          join.notify();
+          break;
+        }
+        token = tokenizer.next();
+        auto bucket = *token.begin % Exec::concurrency();
+        if( bucket != index )
+        {
+          Exec::async( bucket, Job{*this} );
+          break;
+        }
+      }
+    }
+  };
+
+  Join join{ ssize_t(jobs) };
+  const auto begin = std::chrono::steady_clock::now();
+
+  for( size_t job = 0; job < jobs; ++job )
+  {
+    Tokenizer<CharT> tokenizer{ file.array<CharT>() + job * stride, stride };
+    executor.inject( job % concurrency, Job{ tokenizer.next(), tokenizer, map.get(), join } );
+  }
+
+  join.wait();
+  const auto end = std::chrono::steady_clock::now();
+  return end - begin;
+}
+
+template <typename CharT>
+auto freq_with_executor2( const MappedFile & file,
+  size_t jobs_multiplier = 1,
+  size_t concurrency = std::thread::hardware_concurrency() )
+  -> std::chrono::steady_clock::duration
+{
+  using Exec = rabid::Executor<rabid::interconnect::Direct, rabid::ThreadModel >;
+  Exec executor{ concurrency };
+
+  const auto jobs = concurrency * jobs_multiplier;
+  const auto stride = file.size<CharT>() / jobs;
+
+  using FreqMap = std::unordered_map<Token<CharT>,Freq>;
+  const auto map = std::make_unique<FreqMap[]>( concurrency );
+
+  using rabid::detail::Join;
+
+  struct Job {
+    Token<CharT> token;
+    Tokenizer<CharT> tokenizer;
+    FreqMap * buckets;
+    Join & join;
+
+    void operator() ()
+    {
+      buckets[ Exec::current() ][ token ].count += 1;
+      if( !tokenizer.empty() )
+      {
+        token = tokenizer.next();
+        auto bucket = *token.begin % Exec::concurrency();
+        Exec::async( bucket, Job{*this} );
+      }
+      else
+      {
+        join.notify();
+      }
+    }
+  };
+
+  Join join{ ssize_t(jobs) };
+  const auto begin = std::chrono::steady_clock::now();
+
+  for( size_t job = 0; job < jobs; ++job )
+  {
+    Tokenizer<CharT> tokenizer{ file.array<CharT>() + job * stride, stride };
+    executor.inject( job % concurrency, Job{ tokenizer.next(), tokenizer, map.get(), join } );
+  }
+
+  join.wait();
+  const auto end = std::chrono::steady_clock::now();
+  return end - begin;
+}
+
+template <typename CharT>
+class Bucket {
+ public:
+  template < typename Function >
+  void apply( const Token<CharT> & token, Function && function )
+  {
+    std::unique_lock<std::mutex> lock( mutex );
+    function( map[ token ] );
+  }
+ protected:
+  std::mutex mutex;
+  std::unordered_map<Token<CharT>,Freq> map;
+};
+
+template <typename CharT>
+auto freq_with_threads( const MappedFile & file,
+  size_t jobs_multiplier = 1,
+  size_t concurrency = std::thread::hardware_concurrency() )
+  -> std::chrono::steady_clock::duration
+{
+  std::vector<std::thread> threads;
+  threads.reserve( concurrency );
+
+  const auto buckets = std::make_unique<Bucket<CharT>[]>( concurrency );
+
+  struct State {
+    const MappedFile & file;
+    const std::unique_ptr<Bucket<CharT>[]> buckets;
+    const size_t jobs_multiplier;
+    const size_t concurrency;
+    const size_t stride;
+  };
+
+  const auto jobs = jobs_multiplier * concurrency;
+
+  State state{ file,
+    std::make_unique<Bucket<CharT>[]>( concurrency ),
+    jobs_multiplier,
+    concurrency,
+    file.size<CharT>() / jobs };
+
+  struct Job {
+    size_t index;
+    State & state;
+
+    void operator()()
+    {
+      for( size_t job = 0; job < state.jobs_multiplier; ++job )
+      {
+        size_t offset = (index * state.jobs_multiplier + job) * state.stride;
+        Tokenizer<CharT> tokenizer{ state.file.template array<CharT>() + offset, state.stride };
+        while( !tokenizer.empty() )
+        {
+          auto token = tokenizer.next();
+          auto bucket = *token.begin % state.concurrency;
+          state.buckets[ bucket ].apply( token, []( Freq & freq ) { freq.count += 1; } );
+        }
+      }
+    }
+  };
+
+  const auto begin = std::chrono::steady_clock::now();
+
+  for( size_t job = 0; job < concurrency; ++job )
+  {
+    threads.emplace_back( Job{ job, state } );
+  }
+
+  for( auto & thread : threads )
+  {
+    thread.join();
+  }
+
+  const auto end = std::chrono::steady_clock::now();
+  return end - begin;
+}
+
+template <typename CharT>
+auto freq_with_threads2( const MappedFile & file,
+  size_t jobs_multiplier = 1,
+  size_t concurrency = std::thread::hardware_concurrency() )
+  -> std::chrono::steady_clock::duration
+{
+  std::vector<std::thread> threads;
+  threads.reserve( concurrency );
+
+  const auto buckets = std::make_unique<Bucket<CharT>[]>( concurrency );
+
+  struct State {
+    const MappedFile & file;
+    const std::unique_ptr<Bucket<CharT>[]> buckets;
+    const size_t jobs_multiplier;
+    const size_t concurrency;
+    const size_t stride;
+  };
+
+  const auto jobs = jobs_multiplier * concurrency;
+
+  State state{ file,
+    std::make_unique<Bucket<CharT>[]>( concurrency ),
+    jobs_multiplier,
+    concurrency,
+    file.size<CharT>() / jobs };
+
+  struct Job {
+    size_t index;
+    State & state;
+
+    void operator()()
+    {
+      for( size_t job = 0; job < state.jobs_multiplier; ++job )
+      {
+        size_t offset = (index * state.jobs_multiplier + job) * state.stride;
+        Tokenizer<CharT> tokenizer{ state.file.template array<CharT>() + offset, state.stride };
+        while( !tokenizer.empty() )
+        {
+          auto token = tokenizer.next();
+          //auto bucket = *token.begin % state.concurrency;
+          state.buckets[ index ].apply( token, []( Freq & freq ) { freq.count += 1; } );
+        }
+      }
+    }
+  };
+
+  const auto begin = std::chrono::steady_clock::now();
+
+  for( size_t job = 0; job < concurrency; ++job )
+  {
+    threads.emplace_back( Job{ job, state } );
+  }
+
+  for( auto & thread : threads )
+  {
+    thread.join();
+  }
+
+  const auto end = std::chrono::steady_clock::now();
+  return end - begin;
+}
+
 int main( int, char ** argv )
 {
   MappedFile file{ argv[ 1 ] };
 
-  file.warm();
+  std::cout << "Warmed up: " << file.warm() << std::endl;
 
+  {
+    const auto duration = freq_with_executor<char>( file, 10 );
+    std::cout << std::chrono::duration_cast<std::chrono::microseconds>( duration ).count() << " usec" << std::endl;
+  }
+  {
+    const auto duration = freq_with_executor2<char>( file, 10 );
+    std::cout << std::chrono::duration_cast<std::chrono::microseconds>( duration ).count() << " usec" << std::endl;
+  }
+  {
+    const auto duration = freq_with_threads<char>( file, 10 );
+    std::cout << std::chrono::duration_cast<std::chrono::microseconds>( duration ).count() << " usec" << std::endl;
+  }
+  {
+    const auto duration = freq_with_threads2<char>( file, 10 );
+    std::cout << std::chrono::duration_cast<std::chrono::microseconds>( duration ).count() << " usec" << std::endl;
+  }
+  /*
   size_t count = 0;
-  struct Freq {
-    size_t count = 0;
-  };
   Tokenizer<char> tokenizer( file.array<char>(), file.size<char>() );
   std::unordered_map<Token<char>,Freq> counts;
   while( !tokenizer.empty() )
@@ -223,7 +495,8 @@ int main( int, char ** argv )
   {
     std::cout << "'" << pair.first << "': " << pair.second.count << std::endl;
   }
-
+  
   std::cout << file.size<uint8_t>() << " " << count << std::endl;
+  */
   return 0;
 }
