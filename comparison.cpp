@@ -231,22 +231,16 @@ auto freq_with_executor( const MappedFile & file,
 
     void operator() ()
     {
-      const auto index = Exec::current();
-      for(;;)
+      buckets[ Exec::current() ][ token ].count += 1;
+      if( !tokenizer.empty() )
       {
-        buckets[ index ][ token ].count += 1;
-        if( tokenizer.empty() )
-        {
-          join.notify();
-          break;
-        }
         token = tokenizer.next();
         auto bucket = *token.begin % Exec::concurrency();
-        if( bucket != index )
-        {
-          Exec::async( bucket, Job{*this} );
-          break;
-        }
+        Exec::async( bucket, Job{*this} );
+      }
+      else
+      {
+        join.notify();
       }
     }
   };
@@ -295,7 +289,8 @@ auto freq_with_executor2( const MappedFile & file,
       {
         token = tokenizer.next();
         auto bucket = *token.begin % Exec::concurrency();
-        Exec::async( bucket, Job{*this} );
+        Exec::defer( bucket );
+        //Exec::async( bucket, Job{*this} );
       }
       else
       {

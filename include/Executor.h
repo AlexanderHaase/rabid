@@ -157,6 +157,11 @@ namespace rabid {
       workers[ index ].send( task.leak() );
     }
 
+    static void defer( size_t index )
+    {
+      detail::expression::Expression<TaskDispatch>::defer( index );
+    }
+
     static size_t concurrency() { return current_worker->parent.workers.size(); }
     static size_t current() { return current_worker->index; }
 

@@ -240,6 +240,13 @@ namespace rabid {
           }
         }
 
+        template < typename DispatchSpec >
+        static void defer( DispatchSpec && dispatch )
+        {
+          *static_cast<Dispatch*>( current ) = std::forward<DispatchSpec>( dispatch );
+          current = nullptr;
+        }
+
         /// Chain a expression after this one.
         ///
         void chain( const referenced::Pointer<Expression> & expression )
@@ -290,7 +297,11 @@ namespace rabid {
             waiting = std::move( next );
           }
         }
+        static thread_local Expression * current;
       };
+
+      template < typename Dispatch >
+      thread_local Expression<Dispatch> * Expression<Dispatch>::current = nullptr;
 
       /// Abstract base class for storage of "Result" type.
       ///
@@ -337,8 +348,20 @@ namespace rabid {
        public:
         virtual void evaluate( void ) override
         {
+          const auto prior = current;
+          current = this;
           apply( function, this->template container<Result>(), variable->template container<Arg>() );
-          complete();
+          if( current == this )
+          {
+            complete();
+          }
+          else
+          {
+            this->template container<Result>().destruct();
+            dispatch( referenced::Pointer<Expression<Dispatch>>{ this } );
+          }
+          //complete();
+          current = prior;
         }
 
         template < typename DispatchSpec, typename ...Args >
@@ -347,14 +370,10 @@ namespace rabid {
         , function( std::forward<Args>( args )... )
         {}
 
-        /*template < typename ...Args >
-        Continuation( Args && ...args )
-        : function( std::forward<Args>( args )... )
-        {}*/
-
        protected:
         using StorageNode<Dispatch,Result>::complete;
         using StorageNode<Dispatch,Result>::variable;
+        using StorageNode<Dispatch,Result>::current;
         Function function;
       };
     }
