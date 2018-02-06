@@ -43,65 +43,68 @@ namespace rabid {
 
     static constexpr uintptr_t mask = uintptr_t(uintptr_t(1) << TagBits) - uintptr_t(1);
 
-    TaggedPointer() = default;
+    constexpr TaggedPointer() = default;
+    constexpr TaggedPointer( std::nullptr_t ) noexcept
+    : value( reinterpret_cast<uintptr_t>( nullptr ) )
+    {}
 
     static const size_t bits = TagBits;
     using type = Type;
 
     template < typename TagType = uintptr_t >
-    constexpr explicit TaggedPointer( Type * value_arg, TagType tag_arg = 0 )
+    constexpr explicit TaggedPointer( Type * value_arg, TagType tag_arg = 0 ) noexcept
     : value( reinterpret_cast<uintptr_t>( value_arg ) | static_cast<uintptr_t>( tag_arg ) )
     {}
 
     template < typename OtherType, size_t OtherBits /*,
       typename = std::enable_if_t<(OtherBits <= TagBits)>,
       typename = std::enable_if_t<(valid_static_cast<OtherType*,Type*>::value)> */ >
-    constexpr TaggedPointer( const TaggedPointer<OtherType,OtherBits> & other )
+    constexpr TaggedPointer( const TaggedPointer<OtherType,OtherBits> & other ) noexcept
     : TaggedPointer( static_cast<Type*>( other.get() ), other.tag() )
     {}
 
     template < typename OtherType, size_t OtherBits/*,
       typename = std::enable_if_t<(OtherBits <= TagBits)>,
       typename = std::enable_if_t<(valid_static_cast<OtherType*,Type*>::value)>*/ >
-    constexpr operator TaggedPointer<OtherType,OtherBits>() const { return TaggedPointer<OtherType,OtherBits>{ get(), tag() }; }
+    constexpr operator TaggedPointer<OtherType,OtherBits>() const noexcept { return TaggedPointer<OtherType,OtherBits>{ get(), tag() }; }
 
-    constexpr operator Type * () const { return get(); }
+    constexpr operator Type * () const noexcept { return get(); }
 
     template < typename OtherType, size_t OtherBits = Log2<alignof( OtherType )>::value >
-    constexpr TaggedPointer<OtherType,OtherBits> cast() const { return TaggedPointer<OtherType,OtherBits>{ static_cast<OtherType*>(get()), tag() }; }
+    constexpr TaggedPointer<OtherType,OtherBits> cast() const noexcept { return TaggedPointer<OtherType,OtherBits>{ static_cast<OtherType*>(get()), tag() }; }
 
     template < typename TagType = uintptr_t >
-    void set( Type * value_arg, TagType tag_arg = 0 ) { value = reinterpret_cast<uintptr_t>( value_arg ) | static_cast<uintptr_t>( tag_arg ); }
+    void set( Type * value_arg, TagType tag_arg = 0 ) noexcept { value = reinterpret_cast<uintptr_t>( value_arg ) | static_cast<uintptr_t>( tag_arg ); }
 
-    constexpr Type * get() const { return reinterpret_cast<Type*>(value & ~mask); }
-
-    template < typename TagType = uintptr_t >
-    constexpr TagType tag() const { return static_cast<TagType>( value & mask ); }
+    constexpr Type * get() const noexcept { return reinterpret_cast<Type*>(value & ~mask); }
 
     template < typename TagType = uintptr_t >
-    void tag( TagType tag_arg ) { value = reinterpret_cast<uintptr_t>( get() ) | static_cast<uintptr_t>( tag_arg ); }
+    constexpr TagType tag() const noexcept { return static_cast<TagType>( value & mask ); }
 
-    constexpr Type * operator -> () const { return get(); }
-    constexpr Type & operator * () const { return *get(); }
+    template < typename TagType = uintptr_t >
+    void tag( TagType tag_arg ) noexcept { value = reinterpret_cast<uintptr_t>( get() ) | static_cast<uintptr_t>( tag_arg ); }
 
-    TaggedPointer & operator = ( std::nullptr_t ) { value = reinterpret_cast<uintptr_t>( nullptr ); return *this; }
+    constexpr Type * operator -> () const noexcept { return get(); }
+    constexpr Type & operator * () const noexcept { return *get(); }
+
+    TaggedPointer & operator = ( std::nullptr_t ) noexcept { value = reinterpret_cast<uintptr_t>( nullptr ); return *this; }
 
     template < typename OtherType, size_t OtherBits,
       typename = std::enable_if_t<(OtherBits <= TagBits)>,
       typename = std::enable_if_t<(valid_static_cast<OtherType*,Type*>::value)> >
-    TaggedPointer & operator = ( const TaggedPointer<OtherType,OtherBits> & other )
+    TaggedPointer & operator = ( const TaggedPointer<OtherType,OtherBits> & other ) noexcept
     {
       set( static_cast<Type*>( other.get() ), other.tag() );
       return * this;
     }
 
-    friend bool operator == ( const TaggedPointer & a, const Type & b ) { return a.get() == b; }
-    friend bool operator == ( const Type & b, const TaggedPointer & a ) { return a.get() == b; }
-    friend bool operator == ( const TaggedPointer & a, const TaggedPointer & b ) { return a.value == b.value; }
+    friend bool operator == ( const TaggedPointer & a, const Type * b ) noexcept { return a.get() == b; }
+    friend bool operator == ( const Type * b, const TaggedPointer & a ) noexcept { return a.get() == b; }
+    friend bool operator == ( const TaggedPointer & a, const TaggedPointer & b ) noexcept { return a.value == b.value; }
 
-    friend bool operator != ( const TaggedPointer & a, const Type & b ) { return !(a == b); }
-    friend bool operator != ( const Type & b, const TaggedPointer & a ) { return !(a == b); }
-    friend bool operator != ( const TaggedPointer & a, const TaggedPointer & b ) { return !(a == b); }
+    friend bool operator != ( const TaggedPointer & a, const Type * b ) noexcept { return !(a == b); }
+    friend bool operator != ( const Type * b, const TaggedPointer & a ) noexcept { return !(a == b); }
+    friend bool operator != ( const TaggedPointer & a, const TaggedPointer & b ) noexcept { return !(a == b); }
 
    protected:
     uintptr_t value;
@@ -186,13 +189,13 @@ namespace rabid {
       : head( head_arg )
       {}
 
-      List( List && other )
+      List( List && other ) noexcept
       : head( std::move( other.head ) )
       { other.head = nullptr; }
 
       List( const List & ) = delete;
 
-      List & operator = ( List && other )
+      List & operator = ( List && other ) noexcept
       {
         head = std::move( other.head );
         other.head = nullptr;

@@ -214,6 +214,8 @@ namespace rabid {
       , index( index_arg )
       {}
 
+      Worker( Worker && ) noexcept = default;
+
       ~Worker()
       {
         auto sentinel = TaggedPointer<Task>{ nullptr, Tag::normal }.template cast<interconnect::Message>();
@@ -225,6 +227,11 @@ namespace rabid {
             auto task = batch.remove().template cast<Task>();
             release( task );
           }
+        }
+        while( ! sentinel_cache.empty() )
+        {
+          auto task = sentinel_cache.remove().template cast<Task>();
+          release( task );
         }
       }
       
@@ -261,17 +268,24 @@ namespace rabid {
           size_t processed = 0;
           for( auto & connection : node.all() )
           {
-            auto sentinel = make_sentinel( idle, prepare_idle ).template cast<interconnect::Message>();
+            auto sentinel = make_sentinel( idle, prepare_idle );
             auto batch = connection.receive( sentinel );
             while( !batch.empty() )
             {
-              auto task = batch.remove().template cast<Task>();
-              if( task.template tag<Tag>() == Tag::normal )
+              const auto message = batch.remove();
+              if( message.template tag<Tag>() == Tag::normal )
               {
+                const auto task = message.template cast<Task>();
                 task->evaluate();
                 processed += 1;
+                release( task );
               }
-              release( task );
+              else
+              {
+                const auto task = message.template cast<Task>();
+                release( task );
+                //sentinel_cache.insert( message );
+              }
             }
           }
           if( processed == 0 )
@@ -289,28 +303,39 @@ namespace rabid {
               prepare_idle = true;
             }
           }
+          else
+          {
+            prepare_idle = false;
+          }
         }
         current_worker = nullptr;
       }
      protected:
       template < typename Idle >
-      TaggedPointer<Task> make_sentinel( Idle && idle, bool prepare_idle )
+      TaggedPointer<interconnect::Message> make_sentinel( Idle && idle, bool prepare_idle )
       {
         if( prepare_idle )
         {
-          auto task = make_task( typename TaskDispatch::Unaddressed{}, [&idle](){ idle.interrupt(); } );
-          task->next() = nullptr;
-          TaggedPointer<Task> tagged{ task.leak(), Tag::reverse };
-          return tagged;
+          //if( sentinel_cache.empty() )
+          {
+            auto task = make_task( typename TaskDispatch::Unaddressed{}, [&idle](){ idle.interrupt(); } );
+            task->next() = nullptr;
+            TaggedPointer<Task> tagged{ task.leak(), Tag::reverse };
+            return tagged.template cast<interconnect::Message>();
+          }
+          /*else
+          {
+            return sentinel_cache.remove();
+          }*/
         }
         else
         {
-          return TaggedPointer<Task>{ nullptr, Tag::normal };
+          return TaggedPointer<Task>{ nullptr, Tag::normal }.template cast<interconnect::Message>();
         }
       }
 
       const typename Interconnect::NodeType & node;
-
+      interconnect::Batch sentinel_cache;
      public:
       const Executor & parent;
       const size_t index;
