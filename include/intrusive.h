@@ -130,23 +130,23 @@ namespace rabid {
       using PointerType = Pointer<Subclass>;
 
       template < typename Container >
-      Container & container( Subclass Container::* pointer )
+      Container & container( Subclass Container::* pointer ) noexcept
       {
         return container_of( this, pointer );
       }
 
       template < typename Container >
-      Container & container( Subclass Container::* pointer ) const
+      Container & container( Subclass Container::* pointer ) const noexcept
       {
         return container_of( this, pointer );
       }
 
-      PointerType & next()
+      PointerType & next() noexcept
       {
         return link;
       }
 
-      const PointerType & next() const
+      const PointerType & next() const noexcept
       {
         return link;
       }

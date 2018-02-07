@@ -238,10 +238,10 @@ namespace rabid {
       void send( Task * task )
       {
         TaggedPointer<Task> tagged{ task, Tag::normal };
-        TaggedPointer<Task> wake;
-        node.send( tagged.template cast<typename interconnect::Message>(), [&wake]( const interconnect::Message::PointerType & prior )
+        TaggedPointer<interconnect::Message> message;
+        node.send( tagged.template cast<typename interconnect::Message>(), [&message]( const interconnect::Message::PointerType & prior )
           {
-            wake = prior.cast<Task>();
+            message = prior;
             switch( prior.tag<Tag>() )
             {
               case( Tag::reverse ):
@@ -251,8 +251,9 @@ namespace rabid {
             }
           });
 
-        if( wake.template tag<Tag>() == Tag::reverse )
+        if( message.template tag<Tag>() == Tag::reverse )
         {
+          auto wake = message.cast<Task>();
           wake->evaluate();
           release( wake );
         }
@@ -282,9 +283,9 @@ namespace rabid {
               }
               else
               {
-                const auto task = message.template cast<Task>();
-                release( task );
-                //sentinel_cache.insert( message );
+                //const auto task = message.template cast<Task>();
+                //release( task );
+                sentinel_cache.insert( message );
               }
             }
           }
@@ -297,6 +298,7 @@ namespace rabid {
               {
                 break;
               }
+              prepare_idle = false;
             }
             else
             {
@@ -316,21 +318,22 @@ namespace rabid {
       {
         if( prepare_idle )
         {
-          //if( sentinel_cache.empty() )
+          if( sentinel_cache.empty() )
           {
             auto task = make_task( typename TaskDispatch::Unaddressed{}, [&idle](){ idle.interrupt(); } );
-            task->next() = nullptr;
             TaggedPointer<Task> tagged{ task.leak(), Tag::reverse };
             return tagged.template cast<interconnect::Message>();
           }
-          /*else
+          else
           {
-            return sentinel_cache.remove();
-          }*/
+            auto message = sentinel_cache.remove();
+            message->next() = nullptr;
+            return message;
+          }
         }
         else
         {
-          return TaggedPointer<Task>{ nullptr, Tag::normal }.template cast<interconnect::Message>();
+          return TaggedPointer<interconnect::Message>{ nullptr, Tag::normal };
         }
       }
 

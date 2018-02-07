@@ -25,16 +25,17 @@ namespace rabid {
 
     struct Message : intrusive::Link< Message, tagged_pointer_bits<3>::type >
     {
-      Message( size_t index )
+      Message( size_t index ) noexcept
       : address( index )
       {}
 
       struct Unaddressed {};
 
-      Message( const Unaddressed & )
+      Message( const Unaddressed & ) noexcept
       {
         next() = nullptr;
       }
+
       size_t address;
     };
 
@@ -135,7 +136,7 @@ namespace rabid {
           //  == (num_nodes-1)*num_nodes/2 * 2 + num_nodes
           //  == num_nodes * num_nodes
           //
-          const auto base = (nodes.capacity() - 2)*(nodes.capacity()-1);
+          const auto base = nodes.capacity()*(nodes.capacity()-1);
           return buffers[ base + src ];
         }
         else

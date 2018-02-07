@@ -122,6 +122,8 @@ struct Token {
 
   size_t size() const { return end - begin; }
 
+  size_t bucket( size_t concurrency ) const { return (*begin + size()) % concurrency; }
+
   friend bool operator == ( const Token & a, const Token & b )
   {
     return a.size() != b.size() || Traits::compare( a.begin, b.begin, a.size() ) == 0;
@@ -235,8 +237,7 @@ auto freq_with_executor( const MappedFile & file,
       if( !tokenizer.empty() )
       {
         token = tokenizer.next();
-        auto bucket = *token.begin % Exec::concurrency();
-        Exec::async( bucket, Job{*this} );
+        Exec::async( token.bucket( Exec::concurrency() ), Job{*this} );
       }
       else
       {
@@ -288,9 +289,7 @@ auto freq_with_executor2( const MappedFile & file,
       if( !tokenizer.empty() )
       {
         token = tokenizer.next();
-        auto bucket = *token.begin % Exec::concurrency();
-        Exec::defer( bucket );
-        //Exec::async( bucket, Job{*this} );
+        Exec::defer( token.bucket( Exec::concurrency() ) );
       }
       else
       {
@@ -367,7 +366,7 @@ auto freq_with_threads( const MappedFile & file,
         while( !tokenizer.empty() )
         {
           auto token = tokenizer.next();
-          auto bucket = *token.begin % state.concurrency;
+          auto bucket = token.bucket( state.concurrency );
           state.buckets[ bucket ].apply( token, []( Freq & freq ) { freq.count += 1; } );
         }
       }
@@ -452,26 +451,29 @@ auto freq_with_threads2( const MappedFile & file,
   return end - begin;
 }
 
-int main( int, char ** argv )
+int main( int argc, char ** argv )
 {
   MappedFile file{ argv[ 1 ] };
 
   std::cout << "Warmed up: " << file.warm() << std::endl;
 
+  const size_t concurrency = ( argc > 3 ? strtoul( argv[ 3 ], nullptr, 10 ) : std::thread::hardware_concurrency() );
+  const size_t job_multipler = ( argc > 2 ? strtoul( argv[ 2 ], nullptr, 10 ) : concurrency * concurrency );
+
   {
-    const auto duration = freq_with_executor<char>( file, 10 );
+    const auto duration = freq_with_executor<char>( file, job_multipler, concurrency );
     std::cout << std::chrono::duration_cast<std::chrono::microseconds>( duration ).count() << " usec" << std::endl;
   }
   {
-    const auto duration = freq_with_executor2<char>( file, 10 );
+    const auto duration = freq_with_executor2<char>( file, job_multipler, concurrency );
     std::cout << std::chrono::duration_cast<std::chrono::microseconds>( duration ).count() << " usec" << std::endl;
   }
   {
-    const auto duration = freq_with_threads<char>( file, 10 );
+    const auto duration = freq_with_threads<char>( file, job_multipler, concurrency );
     std::cout << std::chrono::duration_cast<std::chrono::microseconds>( duration ).count() << " usec" << std::endl;
   }
   {
-    const auto duration = freq_with_threads2<char>( file, 10 );
+    const auto duration = freq_with_threads2<char>( file, job_multipler, concurrency );
     std::cout << std::chrono::duration_cast<std::chrono::microseconds>( duration ).count() << " usec" << std::endl;
   }
 
