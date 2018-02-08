@@ -64,10 +64,20 @@ SCENARIO( "executor should run things in parallel" )
 {
   GIVEN( "an executor" )
   {
+    using Exec = Executor<interconnect::Direct, execution::ThreadModel>;
+    const auto capacity = std::thread::hardware_concurrency();
+
+    /*THEN( "executor should be waitable" )
+    {
+      Exec executor{ capacity };
+      executor.wait();
+      size_t indicator = 0;
+      executor.inject(0,[&indicator](){ indicator = 1; });
+      executor.wait();
+      REQUIRE( indicator == 1 );
+    }*/
     THEN( "a task should run" )
     {
-      using Exec = Executor<interconnect::Direct, ThreadModel>;
-      const auto capacity = std::thread::hardware_concurrency();
       Exec executor{ capacity };
 
       struct State {

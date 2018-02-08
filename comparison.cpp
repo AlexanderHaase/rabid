@@ -214,7 +214,7 @@ auto freq_with_executor( const MappedFile & file,
   size_t concurrency = std::thread::hardware_concurrency() )
   -> std::chrono::steady_clock::duration
 {
-  using Exec = rabid::Executor<rabid::interconnect::Direct, rabid::ThreadModel >;
+  using Exec = rabid::Executor<rabid::interconnect::Direct, rabid::execution::ThreadModel >;
   Exec executor{ concurrency };
 
   const auto jobs = concurrency * jobs_multiplier;
@@ -266,7 +266,7 @@ auto freq_with_executor2( const MappedFile & file,
   size_t concurrency = std::thread::hardware_concurrency() )
   -> std::chrono::steady_clock::duration
 {
-  using Exec = rabid::Executor<rabid::interconnect::Direct, rabid::ThreadModel >;
+  using Exec = rabid::Executor<rabid::interconnect::Direct, rabid::execution::ThreadModel >;
   Exec executor{ concurrency };
 
   const auto jobs = concurrency * jobs_multiplier;

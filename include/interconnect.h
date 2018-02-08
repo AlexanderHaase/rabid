@@ -57,7 +57,7 @@ namespace rabid {
         remote.insert( message, std::forward<Prepare>( prepare ) );
       }
 
-      Batch receive( const Message::PointerType & message ) const { return local.clear( message ); }      
+      Batch receive( const Message::PointerType & message ) const { return local.clear( message ); }
       
       constexpr Connection reverse() const { return Connection{ local, remote }; }
 
@@ -88,6 +88,19 @@ namespace rabid {
       , connections( std::move( connections_arg ) )
       {}
 
+      template < typename Sentinel, typename Handler >
+      void receive( Sentinel && sentinel, Handler && handler ) const
+      {
+        for( auto & connection :connections )
+        {
+          auto batch = connection.receive( sentinel() );
+          while( !batch.empty() )
+          {
+            handler( batch.remove() );
+          }
+        }
+      }
+
       const std::vector<Connection> & all() const { return connections; }
 
      protected:
@@ -97,6 +110,9 @@ namespace rabid {
     struct Identity {
       template < typename Type >
       const Type & operator() ( const Type & value ) const { return value; }
+
+      template < typename Type >
+      static bool compare( const Type & a, const Type & b ) { return true; }
     };
 
     class Direct {

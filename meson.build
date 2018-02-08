@@ -24,7 +24,8 @@ cpp_lint_flags = [
 	'-Wnull-dereference',
 	'-Wduplicated-cond',
 	'-Wduplicated-branches',
-	'-Wrestrict'
+	'-Wrestrict',
+  '-Wsigned-conversion',
   ]
 
 cpp_other_flags = [
@@ -56,6 +57,11 @@ subdir( 'test' )
 # TODO: Example program
 #
 comparison = executable( 'comparison', 'comparison.cpp', 
+	include_directories : base_includes,
+  dependencies: base_dependencies,
+	cpp_args : cpp_flags )
+
+overhead = executable( 'overhead', 'overhead.cpp', 
 	include_directories : base_includes,
   dependencies: base_dependencies,
 	cpp_args : cpp_flags )
