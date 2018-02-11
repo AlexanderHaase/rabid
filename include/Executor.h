@@ -541,6 +541,8 @@ namespace rabid {
       ///
       void send( Task * task )
       {
+        node.send( TaggedPointer<Task>{ task, Tag::normal }.template cast<interconnect::Message>(), PrepareMessage{} );
+        /*
         TaggedPointer<Task> tagged{ task, Tag::normal };
         TaggedPointer<interconnect::Message> message;
         node.send( tagged.template cast<typename interconnect::Message>(), [&message]( const interconnect::Message::PointerType & prior )
@@ -560,7 +562,7 @@ namespace rabid {
           auto wake = message.cast<Task>();
           wake->evaluate();
           release( wake );
-        }
+        }*/
       }
 
       /// Event loop for the worker, specialized based on idle type.
@@ -582,9 +584,53 @@ namespace rabid {
       void operator()( Idle && idle )
       {
         current_worker = this;
-        bool prepare_idle = false;
+        //bool prepare_idle = false;
+        MessageAgent<Idle> agent{ idle };
         for(;;)
         {
+          node.operate( agent );
+          if( agent.processed == 0 )
+          {
+            if( agent.prepare_idle )
+            {
+              const bool exit = !idle.yield();
+              if( exit )
+              {
+                break;
+              }
+            }
+            agent.prepare_idle = !agent.prepare_idle;
+          }
+          else
+          {
+            agent.prepare_idle = false;
+          }
+          agent.processed = 0;
+            
+          /*if( prepare_idle )
+          {
+            IdleAgent<Idle> agent{ sentinel_cache, idle };
+            node.operate( agent );
+
+            if( agent.processed == 0 )
+            {
+              // Sleep unless instructed to exit.
+              //
+              const bool exit = !idle.yield();
+              if( exit )
+              {
+                break;
+              }
+            }
+            prepare_idle = false;
+          }
+          else
+          {
+            BasicAgent agent{ sentinel_cache };
+            node.operate( agent );
+            prepare_idle = (agent.processed == 0);
+          }*/
+          /*
           size_t processed = 0;
           auto sentinel = [&]() { return make_sentinel( idle, prepare_idle ); };
           node.receive( sentinel, [&]( const TaggedPointer<interconnect::Message> & message )
@@ -637,11 +683,163 @@ namespace rabid {
           else
           {
             prepare_idle = false;
-          }
+          }*/
         }
         current_worker = nullptr;
       }
      protected:
+      struct PrepareMessage
+      {
+        TaggedPointer<interconnect::Message> message;
+        TaggedPointer<interconnect::Message> operator() ( const TaggedPointer<interconnect::Message> & prior )
+        {
+          message = prior;
+          switch( prior.tag<Tag>() )
+          {
+            case( Tag::reverse ):
+              return interconnect::Message::PointerType{ nullptr, Tag::normal };
+            default:
+              return prior;
+          }
+        }
+
+        ~PrepareMessage()
+        {
+          if( message.template tag<Tag>() == Tag::reverse )
+          {
+            auto wake = message.cast<Task>();
+            wake->evaluate();
+            release( wake );
+          }
+        }
+      };
+    
+      struct BasicAgent
+      {
+        interconnect::Batch & cache;
+        size_t processed = 0;
+
+        BasicAgent( interconnect::Batch & cache_arg )
+        : cache( cache_arg )
+        {}
+
+        void receive( const TaggedPointer<interconnect::Message> & message )
+        {
+          if( message.template tag<Tag>() == Tag::normal )
+          {
+            const auto task = message.template cast<Task>();
+            task->evaluate();
+            processed += 1;
+            release( task );
+          }
+          else
+          {
+            cache.insert( message );
+          }
+        }
+
+        PrepareMessage preparer() { return PrepareMessage{}; }
+
+        TaggedPointer<interconnect::Message> sentinel() const
+        {
+          return TaggedPointer<interconnect::Message>{ nullptr, Tag::normal };
+        }
+      };
+
+      template <typename Idle>
+      struct IdleAgent : BasicAgent
+      {
+        using BasicAgent::cache;
+        Idle & idle;
+
+        IdleAgent( interconnect::Batch & cache_arg, Idle & idle_arg )
+        : BasicAgent( cache_arg )
+        , idle( idle_arg )
+        {}
+
+        TaggedPointer<interconnect::Message> sentinel() const
+        {
+          if( cache.empty() )
+          {
+            auto task = make_task( typename TaskDispatch::Unaddressed{}, [&idle = idle]()
+              {
+                idle.interrupt();
+              });
+            TaggedPointer<Task> tagged{ task.leak(), Tag::reverse };
+            return tagged.template cast<interconnect::Message>();
+          }
+          else
+          {
+            auto message = cache.remove();
+            message->next() = nullptr;
+            return message;
+          }
+        }
+      };
+
+      template <typename Idle>
+      struct MessageAgent
+      {
+        Idle & idle;
+        interconnect::Batch cache;
+        size_t processed = 0;
+        bool prepare_idle = false;
+
+        MessageAgent( Idle & idle_arg )
+        : idle( idle_arg )
+        {}
+
+        ~MessageAgent()
+        {
+          while( !cache.empty() )
+          {
+            release( cache.remove().template cast<Task>() );
+          }
+        }
+
+        void receive( const TaggedPointer<interconnect::Message> & message )
+        {
+          if( message.template tag<Tag>() == Tag::normal )
+          {
+            const auto task = message.template cast<Task>();
+            task->evaluate();
+            processed += 1;
+            release( task );
+          }
+          else
+          {
+            cache.insert( message );
+          }
+        }
+
+        PrepareMessage preparer() { return PrepareMessage{}; }
+
+        TaggedPointer<interconnect::Message> sentinel()
+        {
+          if( prepare_idle )
+          {
+            if( cache.empty() )
+            {
+              auto task = make_task( typename TaskDispatch::Unaddressed{}, [&idle = idle]()
+                {
+                  idle.interrupt();
+                });
+              TaggedPointer<Task> tagged{ task.leak(), Tag::reverse };
+              return tagged.template cast<interconnect::Message>();
+            }
+            else
+            {
+              auto message = cache.remove();
+              message->next() = nullptr;
+              return message;
+            }
+          }
+          else
+          {
+            return TaggedPointer<interconnect::Message>{ nullptr, Tag::normal };
+          }
+        }
+      };
 
       /// Make a sentinel message for receiving messages.
       ///

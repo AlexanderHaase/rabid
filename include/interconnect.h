@@ -74,8 +74,6 @@ namespace rabid {
     template < typename AddressMap >
     class Node : protected AddressMap {
      public:
-      const Connection & route( const Message & message ) const { return connections[ AddressMap::operator()( message.address ) ]; }
-
       template < typename Prepare >
       void send( const Message::PointerType & message, Prepare && prepare ) const
       {
@@ -88,6 +86,27 @@ namespace rabid {
       , connections( std::move( connections_arg ) )
       {}
 
+      template < typename Agent >
+      void operate( Agent && agent ) const
+      {
+        for( auto & connection :connections )
+        {
+          auto batch = connection.receive( agent.sentinel() );
+          while( !batch.empty() )
+          {
+            const auto message = batch.remove();
+            if( AddressMap::terminal( message ) )
+            {
+              agent.receive( message );
+            }
+            else
+            {
+              send( message, agent.preparer() );
+            }
+          }
+        }
+      }
+
       template < typename Sentinel, typename Handler >
       void receive( Sentinel && sentinel, Handler && handler ) const
       {
@@ -96,7 +115,11 @@ namespace rabid {
           auto batch = connection.receive( sentinel() );
           while( !batch.empty() )
           {
-            handler( batch.remove() );
+            const auto message = batch.remove();
+            if( AddressMap::terminal( message ) )
+            {
+              handler( message );
+            }
           }
         }
       }
@@ -104,6 +127,7 @@ namespace rabid {
       const std::vector<Connection> & all() const { return connections; }
 
      protected:
+      const Connection & route( const Message & message ) const { return connections[ AddressMap::operator()( message.address ) ]; }
       std::vector<Connection> connections;
     };
 
@@ -112,7 +136,7 @@ namespace rabid {
       const Type & operator() ( const Type & value ) const { return value; }
 
       template < typename Type >
-      static bool compare( const Type & a, const Type & b ) { return true; }
+      static bool terminal( const Type & ) { return true; }
     };
 
     class Direct {
