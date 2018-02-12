@@ -68,7 +68,7 @@ class MappedFile {
 
         close();
 
-        base = ::mmap( nullptr, length, PROT_READ, MAP_SHARED, fd, offset );
+        base = ::mmap( nullptr, length, PROT_READ, MAP_SHARED, fd, off_t(offset) );
         if( base == MAP_FAILED )
         {
           base = nullptr;
@@ -120,9 +120,9 @@ struct Token {
   const CharT * begin;
   const CharT * end;
 
-  size_t size() const { return end - begin; }
+  size_t size() const { return size_t(end - begin); }
 
-  size_t bucket( size_t concurrency ) const { return (*begin + size()) % concurrency; }
+  size_t bucket( size_t concurrency ) const { return (size_t(*begin) + size()) % concurrency; }
 
   friend bool operator == ( const Token & a, const Token & b )
   {

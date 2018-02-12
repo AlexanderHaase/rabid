@@ -14,7 +14,7 @@ struct Test : referenced::Object<Test> {
 
   ~Test()
   {
-    active.fetch_add( -1 );
+    active.fetch_sub( 1 );
   }
 };
 

@@ -25,7 +25,7 @@ cpp_lint_flags = [
 	'-Wduplicated-cond',
 	'-Wduplicated-branches',
 	'-Wrestrict',
-  '-Wsigned-conversion',
+  '-Wsign-conversion',
   ]
 
 cpp_other_flags = [

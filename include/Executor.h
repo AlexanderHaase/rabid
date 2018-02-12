@@ -201,7 +201,7 @@ namespace rabid {
       }
 
      protected:
-      std::atomic<ssize_t> count;         ///< Number of pending events.
+      std::atomic<size_t> count;         ///< Number of pending events.
       std::mutex mutex;                   ///< Synchronizes condition var.
       std::condition_variable condition;  ///< Sleep/wakeup.
     };
@@ -519,17 +519,10 @@ namespace rabid {
       ///
       ~Worker()
       {
-        auto sentinel = [](){ return TaggedPointer<Task>{ nullptr, Tag::normal }.template cast<interconnect::Message>(); };
-        node.receive( sentinel, []( const TaggedPointer<interconnect::Message> & message )
+        node.clear( []( const TaggedPointer<interconnect::Message> & message )
           {
             release( message.template cast<Task>() );
           });
-
-        while( ! sentinel_cache.empty() )
-        {
-          auto task = sentinel_cache.remove().template cast<Task>();
-          release( task );
-        }
       }
 
       /// Send a task, usurping the current reference.
@@ -542,27 +535,6 @@ namespace rabid {
       void send( Task * task )
       {
         node.send( TaggedPointer<Task>{ task, Tag::normal }.template cast<interconnect::Message>(), PrepareMessage{} );
-        /*
-        TaggedPointer<Task> tagged{ task, Tag::normal };
-        TaggedPointer<interconnect::Message> message;
-        node.send( tagged.template cast<typename interconnect::Message>(), [&message]( const interconnect::Message::PointerType & prior )
-          {
-            message = prior;
-            switch( prior.tag<Tag>() )
-            {
-              case( Tag::reverse ):
-                return interconnect::Message::PointerType{ nullptr, Tag::normal };
-              default:
-                return prior;
-            }
-          });
-
-        if( message.template tag<Tag>() == Tag::reverse )
-        {
-          auto wake = message.cast<Task>();
-          wake->evaluate();
-          release( wake );
-        }*/
       }
 
       /// Event loop for the worker, specialized based on idle type.
@@ -584,7 +556,6 @@ namespace rabid {
       void operator()( Idle && idle )
       {
         current_worker = this;
-        //bool prepare_idle = false;
         MessageAgent<Idle> agent{ idle };
         for(;;)
         {
@@ -606,88 +577,18 @@ namespace rabid {
             agent.prepare_idle = false;
           }
           agent.processed = 0;
-            
-          /*if( prepare_idle )
-          {
-            IdleAgent<Idle> agent{ sentinel_cache, idle };
-            node.operate( agent );
-
-            if( agent.processed == 0 )
-            {
-              // Sleep unless instructed to exit.
-              //
-              const bool exit = !idle.yield();
-              if( exit )
-              {
-                break;
-              }
-            }
-            prepare_idle = false;
-          }
-          else
-          {
-            BasicAgent agent{ sentinel_cache };
-            node.operate( agent );
-            prepare_idle = (agent.processed == 0);
-          }*/
-          /*
-          size_t processed = 0;
-          auto sentinel = [&]() { return make_sentinel( idle, prepare_idle ); };
-          node.receive( sentinel, [&]( const TaggedPointer<interconnect::Message> & message )
-            {
-              if( message.template tag<Tag>() == Tag::normal )
-              {
-                const auto task = message.template cast<Task>();
-                task->evaluate();
-                processed += 1;
-                release( task );
-              }
-              else
-              {
-                //const auto task = message.template cast<Task>();
-                //release( task );
-                sentinel_cache.insert( message );
-              }
-            });
-
-          if( processed == 0 )
-          {
-            if( prepare_idle )
-            {
-              // Signal we're out of work for Executor::wait()
-              //
-              //parent.active.decrement();
-
-              // Sleep unless instructed to exit.
-              //
-              const bool exit = !idle.yield();
-              if( exit )
-              {
-                break;
-              }
-              else
-              {
-                // TODO: notify should actually be in the wake task to avoid
-                // false-positives, but accurate counting from that context
-                // isn't straight forward.
-                //
-                //parent.join.notify( -1 );
-                prepare_idle = false;
-              }
-            }
-            else
-            {
-              prepare_idle = true;
-            }
-          }
-          else
-          {
-            prepare_idle = false;
-          }*/
         }
         current_worker = nullptr;
       }
      protected:
+
+      /// Helper class that detects and invokes reverse messages during send.
+      ///
+      /// Messages are sent via CAS loop. Captures the prior value and ensures
+      /// reverse messages are removed from the lock free list. It invokes any
+      /// reverse messages filtered that way when it goes out of scope, and
+      /// releases the held reference.
+      /// 
       struct PrepareMessage
       {
         TaggedPointer<interconnect::Message> message;
@@ -713,70 +614,11 @@ namespace rabid {
           }
         }
       };
-    
-      struct BasicAgent
-      {
-        interconnect::Batch & cache;
-        size_t processed = 0;
 
-        BasicAgent( interconnect::Batch & cache_arg )
-        : cache( cache_arg )
-        {}
-
-        void receive( const TaggedPointer<interconnect::Message> & message )
-        {
-          if( message.template tag<Tag>() == Tag::normal )
-          {
-            const auto task = message.template cast<Task>();
-            task->evaluate();
-            processed += 1;
-            release( task );
-          }
-          else
-          {
-            cache.insert( message );
-          }
-        }
-
-        PrepareMessage preparer() { return PrepareMessage{}; }
-
-        TaggedPointer<interconnect::Message> sentinel() const
-        {
-          return TaggedPointer<interconnect::Message>{ nullptr, Tag::normal };
-        }
-      };
-
-      template <typename Idle>
-      struct IdleAgent : BasicAgent
-      {
-        using BasicAgent::cache;
-        Idle & idle;
-
-        IdleAgent( interconnect::Batch & cache_arg, Idle & idle_arg )
-        : BasicAgent( cache_arg )
-        , idle( idle_arg )
-        {}
-
-        TaggedPointer<interconnect::Message> sentinel() const
-        {
-          if( cache.empty() )
-          {
-            auto task = make_task( typename TaskDispatch::Unaddressed{}, [&idle = idle]()
-              {
-                idle.interrupt();
-              });
-            TaggedPointer<Task> tagged{ task.leak(), Tag::reverse };
-            return tagged.template cast<interconnect::Message>();
-          }
-          else
-          {
-            auto message = cache.remove();
-            message->next() = nullptr;
-            return message;
-          }
-        }
-      };
-
+      /// Specialized class for receiving messages from the interconnect.
+      ///
+      /// Provides facilities to forward messages.
+      ///
       template <typename Idle>
       struct MessageAgent
       {
@@ -812,8 +654,13 @@ namespace rabid {
           }
         }
 
-        PrepareMessage preparer() { return PrepareMessage{}; }
+        static PrepareMessage preparer() { return PrepareMessage{}; }
 
+        /// Make a sentinel message for receiving messages.
+        ///
+        /// If preparing to idle, returns an Tag::reverse executable sentinel message,
+        /// otherwise nullptr. Attempts to use cached sentinels.
+        ///
         TaggedPointer<interconnect::Message> sentinel()
         {
           if( prepare_idle )
@@ -841,44 +688,7 @@ namespace rabid {
         }
       };
 
-      /// Make a sentinel message for receiving messages.
-      ///
-      /// If preparing to idle, returns an Tag::reverse executable sentinel message,
-      /// otherwise nullptr. Attempts to use cached sentinels.
-      ///
-      /// @tparam Idle type of Idle to wrap for wakeup/interrupt request.
-      /// @param idle reference to idle to wrap into sentinel message.
-      /// @param prepare_idle indicate if a message should be prepared.
-      ///
-      template < typename Idle >
-      TaggedPointer<interconnect::Message> make_sentinel( Idle && idle, bool prepare_idle )
-      {
-        if( prepare_idle )
-        {
-          if( sentinel_cache.empty() )
-          {
-            auto task = make_task( typename TaskDispatch::Unaddressed{}, [this,&idle]()
-              {
-                idle.interrupt();
-              });
-            TaggedPointer<Task> tagged{ task.leak(), Tag::reverse };
-            return tagged.template cast<interconnect::Message>();
-          }
-          else
-          {
-            auto message = sentinel_cache.remove();
-            message->next() = nullptr;
-            return message;
-          }
-        }
-        else
-        {
-          return TaggedPointer<interconnect::Message>{ nullptr, Tag::normal };
-        }
-      }
-
       const typename Interconnect::NodeType & node;
-      interconnect::Batch sentinel_cache;
      public:
       Executor & parent;
       const size_t index;

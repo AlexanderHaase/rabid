@@ -15,12 +15,12 @@ namespace rabid {
       { 
         if( base )
         {
-          base->references.fetch_add( 1, std::memory_order_relaxed );
+          base->references.fetch_add( 1u, std::memory_order_relaxed );
         }
       }
       friend void release( Base * base )
       {
-        if( base && 1 == base->references.fetch_add( -1, std::memory_order_relaxed ) )
+        if( base && 1u == base->references.fetch_sub( 1u, std::memory_order_relaxed ) )
         { 
           Deleter{}( base );
         }

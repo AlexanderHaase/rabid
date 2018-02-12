@@ -2,6 +2,7 @@
 #include "intrusive.h"
 #include <algorithm>
 #include <memory>
+#include <vector>
 
 namespace rabid {
 
@@ -107,24 +108,20 @@ namespace rabid {
         }
       }
 
-      template < typename Sentinel, typename Handler >
-      void receive( Sentinel && sentinel, Handler && handler ) const
+      const std::vector<Connection> & all() const { return connections; }
+
+      template < typename MessageHandler >
+      void clear( MessageHandler && handler ) const
       {
         for( auto & connection :connections )
         {
-          auto batch = connection.receive( sentinel() );
+          auto batch = connection.receive( nullptr );
           while( !batch.empty() )
           {
-            const auto message = batch.remove();
-            if( AddressMap::terminal( message ) )
-            {
-              handler( message );
-            }
+            handler( batch.remove() );
           }
         }
       }
-
-      const std::vector<Connection> & all() const { return connections; }
 
      protected:
       const Connection & route( const Message & message ) const { return connections[ AddressMap::operator()( message.address ) ]; }
