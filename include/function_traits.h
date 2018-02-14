@@ -32,7 +32,7 @@ namespace rabid {
 	struct is_functor
 	{
 		template < typename U >
-		static auto test( nullptr_t ) -> decltype( &U::operator() );
+		static auto test( std::nullptr_t ) -> decltype( &U::operator() );
 
 		template < typename U>
 		static auto test( ... ) -> std::false_type;

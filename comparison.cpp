@@ -94,7 +94,7 @@ class MappedFile {
 
   size_t warm() const
   {
-    size_t total;
+    size_t total = 0;
     for( size_t index = 0; index < size<uint8_t>(); ++index )
     {
       total += array<uint8_t>()[ index ];
@@ -312,6 +312,80 @@ auto freq_with_executor2( const MappedFile & file,
   return end - begin;
 }
 
+
+template <typename CharT>
+auto freq_with_executor3( const MappedFile & file,
+  size_t jobs_multiplier = 1,
+  size_t concurrency = std::thread::hardware_concurrency() )
+  -> std::chrono::steady_clock::duration
+{
+  using Exec = rabid::Executor<rabid::interconnect::Direct, rabid::execution::ThreadModel >;
+  Exec executor{ concurrency };
+
+  const auto jobs = concurrency * jobs_multiplier;
+  const auto stride = file.size<CharT>() / jobs;
+
+  static size_t next_index = 0;
+  struct Bucket {
+
+    Bucket()
+    : mutex( next_index++ )
+    {}
+
+    std::unordered_map<Token<CharT>,Freq> map;
+    Exec::Mutex mutex;
+  };
+
+  const auto map = std::make_unique<Bucket[]>( concurrency );
+
+  using rabid::detail::Join;
+
+  struct Job {
+    Token<CharT> token;
+    size_t bucket;
+    Tokenizer<CharT> tokenizer;
+    Bucket * buckets;
+    Join & join;
+
+    void operator() ()
+    {
+      for(;;)
+      {
+        auto lock = buckets[ bucket ].mutex.lock_or_defer();
+        if( !lock )
+        {
+          break;
+        }
+        buckets[ bucket ].map[ token ].count += 1;
+        if( !tokenizer.empty() )
+        {
+          token = tokenizer.next();
+          bucket = token.bucket( Exec::concurrency() );
+        }
+        else
+        {
+          join.notify();
+          break;
+        }
+      }
+    }
+  };
+
+  Join join{ ssize_t(jobs) };
+  const auto begin = std::chrono::steady_clock::now();
+
+  for( size_t job = 0; job < jobs; ++job )
+  {
+    Tokenizer<CharT> tokenizer{ file.array<CharT>() + job * stride, stride };
+    Token<CharT> token = tokenizer.next();
+    executor.inject( job % concurrency, Job{ token, token.bucket( concurrency ), tokenizer, map.get(), join } );
+  }
+
+  join.wait();
+  const auto end = std::chrono::steady_clock::now();
+  return end - begin;
+}
+
 template <typename CharT>
 class Bucket {
  public:
@@ -466,6 +540,10 @@ int main( int argc, char ** argv )
   }
   {
     const auto duration = freq_with_executor2<char>( file, job_multipler, concurrency );
+    std::cout << std::chrono::duration_cast<std::chrono::microseconds>( duration ).count() << " usec" << std::endl;
+  }
+  {
+    const auto duration = freq_with_executor3<char>( file, job_multipler, concurrency );
     std::cout << std::chrono::duration_cast<std::chrono::microseconds>( duration ).count() << " usec" << std::endl;
   }
   {

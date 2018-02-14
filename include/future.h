@@ -19,7 +19,7 @@ namespace rabid {
       using Result = typename function_traits<Function>::return_type;
       referenced::Pointer<Concept> result{ new Expression<Function,Value,Result>{ static_cast<Dispatch&>( *value ), std::forward<Function>( function ) } };
       value->chain( result );
-      return result;
+      return Future<Result,Dispatch>{ std::move( result ) };
     }
 
     template < typename DispatchSpec, typename Function >
@@ -29,7 +29,7 @@ namespace rabid {
       using Result = typename function_traits<Function>::return_type;
       referenced::Pointer<Concept> result{ new Expression<Function,Value,Result>{ std::forward<DispatchSpec>( dispatch ), std::forward<Function>( function ) } };
       value->chain( result );
-      return result;
+      return Future<Result,Dispatch>{ std::move( result ) };
     }
 
     Future( referenced::Pointer<Concept> && coupling )
@@ -55,7 +55,7 @@ namespace rabid {
       using Result = typename function_traits<Function>::return_type;
       referenced::Pointer<Concept> result{ new Expression<Function,Value,Result>{ static_cast<Dispatch&>( *value ), std::forward<Function>( function ) } };
       value->chain( result );
-      return result;
+      return Future<Result,Dispatch>{ std::move( result ) };
     }
 
     template < typename DispatchSpec, typename Function >
@@ -65,7 +65,7 @@ namespace rabid {
       using Result = typename function_traits<Function>::return_type;
       referenced::Pointer<Concept> result{ new Expression<Function,Value,Result>{ std::forward<DispatchSpec>( dispatch ), std::forward<Function>( function ) } };
       value->chain( result );
-      return result;
+      return Future<Result,Dispatch>{ std::move( result ) };
     }
 
     template < typename ...Args >

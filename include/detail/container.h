@@ -51,7 +51,7 @@ namespace rabid {
       using type = void;
 
       template < typename ...Args >
-      void construct( Args && ...args )
+      void construct( Args && ... )
       {}
 
       template < typename Function, typename ... Args >

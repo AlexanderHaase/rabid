@@ -370,7 +370,7 @@ namespace rabid {
       auto task = make_task( index, std::forward<Function>( function ) );
       acquire( task );
       current_worker->send( task );
-      return task;
+      return TaskFuture<Function>{ std::move( task ) };
     }
 
     /// Re-evaluate the current task elsewhere.
@@ -406,6 +406,99 @@ namespace rabid {
     static bool available() { return current_worker != nullptr; }
 
     /*void wait() { active.wait(); }*/
+
+    class Mutex {
+     protected:
+      class Lock;
+     public:
+      Mutex( size_t worker )
+      : location( worker )
+      {}
+
+      Lock lock_or_defer()
+      {
+        size_t available = 0;
+        size_t held = 1;
+        const bool success = Executor::current() == location && 
+          locks.compare_exchange_strong( available, held, std::memory_order_relaxed );
+        if( !success )
+        {
+          Executor::defer( location );
+        }        
+        return Lock{ success ? this : nullptr };
+      }
+
+     protected:
+      void acquire() { locks.fetch_add( 1, std::memory_order_relaxed ); }
+      void release()
+      { 
+        if( 1 == locks.fetch_sub( 1, std::memory_order_relaxed ) )
+        {
+          /* TODO */
+        }
+      }
+      class Lock {
+       public:
+        void release()
+        {
+          if( mutex )
+          {
+            mutex->release();
+            mutex = nullptr;
+          }
+        }
+
+        ~Lock() { release(); }
+
+        Lock() = default;
+
+        Lock( Mutex * mutex_held )
+        : mutex( mutex_held )
+        {}
+
+        Lock( const Lock & other )
+        : Lock( other.mutex )
+        {}
+
+        Lock( Lock && other )
+        : mutex( std::move( other.mutex ) )
+        {
+          other.mutex = nullptr;
+        }
+
+        Lock & operator = ( const Lock & other )
+        {
+          release();
+          mutex = other.mutex;
+          acquire();
+          return *this;
+        }
+
+        bool locked() const { return mutex != nullptr; }
+        operator bool() const { return locked(); }
+
+        Lock & operator = ( Lock && other )
+        {
+          mutex = std::move( other.mutex );
+          other.mutex = nullptr;
+          return *this;
+        }
+       protected:
+        void acquire()
+        {
+          if( mutex )
+          {
+            mutex->acquire();
+          }
+        }
+        Mutex * mutex = nullptr;
+      };
+
+      const size_t location;
+      std::atomic<size_t> locks{0};
+      interconnect::Batch waiting;
+      interconnect::Buffer pending;
+    };
 
    protected:
 
